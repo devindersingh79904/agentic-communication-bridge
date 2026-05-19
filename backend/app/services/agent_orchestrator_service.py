@@ -146,6 +146,9 @@ async def cancel_task(task_id: str) -> None:
     if not task_info:
         return
         
+    if task_info.get("task_state") == TaskState.CANCELLED:
+        return
+        
     if not transition_task_state(task_id, TaskState.CANCELLED):
         logger.debug("Task state transition to CANCELLED failed or already terminal")
         return
@@ -156,6 +159,7 @@ async def cancel_task(task_id: str) -> None:
     if asyncio_task and not asyncio_task.done():
         logger.info("Orchestration cancelled")
         asyncio_task.cancel()
+        await asyncio.gather(asyncio_task, return_exceptions=True)
         
 def cleanup_task(task_id: str) -> None:
     """
@@ -434,11 +438,14 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         
     except asyncio.CancelledError:
         logger.info("Orchestration cancelled exception caught")
+        task_info = active_tasks.get(task_id)
+        if task_info and task_info.get("task_state") == TaskState.CANCELLED:
+            return
+            
         if websocket.client_state != WebSocketState.CONNECTED:
             return
             
-        task_info = active_tasks.get(task_id)
-        if task_info and task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+        if task_info and task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED):
             return
             
         if task_info and task_info.get("task_state") != TaskState.CANCELLED:

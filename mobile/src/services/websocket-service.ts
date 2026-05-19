@@ -189,6 +189,9 @@ export const connectAgentWS = (prompt: string) => {
       store.setConnectionStatus('disconnected');
       store.setSocket(null);
       store.setCurrentPrompt(null);
+      store.setTimeoutCountdown(null);
+      store.setIsAwaitingApproval(false);
+      store.setIsRegenerating(false);
       if (timerId) {
         clearInterval(timerId);
         timerId = null;

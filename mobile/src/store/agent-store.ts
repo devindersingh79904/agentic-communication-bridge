@@ -169,6 +169,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   sendStop: () => {
     const { socket, taskId, correlationId } = get();
+    
+    // Immediate optimistic cleanup
+    set({
+      taskState: 'CANCELLED',
+      isAwaitingApproval: false,
+      isRegenerating: false,
+      timeoutCountdown: null,
+    });
+
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
@@ -177,6 +186,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           correlation_id: correlationId,
         })
       );
+      // Prevent repeated STOP spam by closing socket immediately
+      socket.close();
     }
   },
 

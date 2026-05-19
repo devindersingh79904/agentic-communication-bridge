@@ -312,7 +312,11 @@ export const AgentScreen = () => {
                 <TouchableOpacity style={styles.rejectButton} onPress={handleReject}>
                   <Text style={styles.actionButtonText}>Reject</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.stopApprovalButton} onPress={sendStop}>
+                <TouchableOpacity
+                  style={styles.stopApprovalButton}
+                  onPress={sendStop}
+                  disabled={taskState === 'CANCELLED'}
+                >
                   <Text style={styles.actionButtonText}>Stop</Text>
                 </TouchableOpacity>
               </View>
@@ -354,7 +358,11 @@ export const AgentScreen = () => {
                   {taskState === 'EXECUTING' ? 'Executing approved workflow...' : 'Agent executing workflow steps...'}
                 </Text>
               </View>
-              <TouchableOpacity style={styles.stopButton} onPress={sendStop}>
+              <TouchableOpacity
+                style={styles.stopButton}
+                onPress={sendStop}
+                disabled={taskState === 'CANCELLED'}
+              >
                 <Text style={styles.stopButtonText}>Stop Agent</Text>
               </TouchableOpacity>
             </View>
