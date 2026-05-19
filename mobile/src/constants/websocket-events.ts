@@ -7,6 +7,7 @@ export const SERVER_EVENTS = {
 } as const;
 
 export const CLIENT_EVENTS = {
+  START_TASK: 'START_TASK',
   APPROVED: 'APPROVED',
   STOP: 'STOP',
 } as const;

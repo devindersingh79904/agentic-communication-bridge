@@ -1,23 +1,23 @@
 import { useAgentStore } from '../store/agent-store';
-import { SERVER_EVENTS } from '../constants/websocket-events';
-import { ServerEvent } from '../types/websocket';
+import { SERVER_EVENTS, CLIENT_EVENTS } from '../constants/websocket-events';
+import { ServerEvent, AgentStep } from '../types/websocket';
 
 let timerId: any = null;
 
 export const connectAgentWS = (prompt: string) => {
   const store = useAgentStore.getState();
-  
+
   // Clean up any existing timers
   if (timerId) {
     clearInterval(timerId);
     timerId = null;
   }
 
-  // Pre-initialize prompt in chat log
+  // Pre-initialize prompt in chat log and set optimistic SCHEDULED state
   store.connectWebSocket(prompt);
 
   const cleanHost = store.hostUrl.replace(/^(ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)/, '');
-  
+
   // Resolve protocol automatically (WSS for HTTPS/SSL, WS for HTTP/Local)
   let protocol = 'ws';
   if (typeof window !== 'undefined' && window.location) {
@@ -26,7 +26,7 @@ export const connectAgentWS = (prompt: string) => {
     // Non-browser or native fallback
     protocol = cleanHost.includes('localhost') || cleanHost.includes('127.0.0.1') ? 'ws' : 'wss';
   }
-  
+
   const wsUrl = `${protocol}://${cleanHost}/v1/agent/connect`;
 
   store.appendMessage({
@@ -45,6 +45,14 @@ export const connectAgentWS = (prompt: string) => {
         sender: 'system',
         text: 'Connected. Workflow initialized.',
       });
+
+      // Send START_TASK event with the user prompt
+      ws.send(
+        JSON.stringify({
+          event_type: CLIENT_EVENTS.START_TASK,
+          prompt: prompt,
+        })
+      );
     };
 
     ws.onmessage = (event) => {
@@ -59,23 +67,28 @@ export const connectAgentWS = (prompt: string) => {
         switch (event_type) {
           case SERVER_EVENTS.STATUS_UPDATE:
             store.updateTaskState(task_state);
+            // Track the agent workflow step separately
+            if ('agent_step' in data && data.agent_step) {
+              store.setCurrentAgentStep(data.agent_step as AgentStep);
+            }
             store.appendMessage({
               sender: 'agent',
               text: message,
-              agent_step: data.agent_step,
+              agent_step: (data as any).agent_step,
             });
             break;
 
           case SERVER_EVENTS.APPROVAL_REQUIRED:
             store.updateTaskState('WAITING_APPROVAL');
-            store.setDraftMessage(data.draft_message);
+            store.setCurrentAgentStep(null);
+            store.setDraftMessage((data as any).draft_message);
             store.setIsAwaitingApproval(true);
             store.setError(null);
-            
+
             // Set dynamic timeout countdown (fallback to 10s if missing)
-            const timeoutSecs = data.approval_timeout_seconds ?? 10;
+            const timeoutSecs = (data as any).approval_timeout_seconds ?? 10;
             store.setTimeoutCountdown(timeoutSecs);
-            
+
             if (timerId) clearInterval(timerId);
             timerId = setInterval(() => {
               store.setTimeoutCountdown((prev) => {
@@ -91,14 +104,15 @@ export const connectAgentWS = (prompt: string) => {
 
             store.appendMessage({
               sender: 'agent',
-              text: `${message}\nDraft: "${data.draft_message}"`,
+              text: `${message}\nDraft: "${(data as any).draft_message}"`,
               agent_step: 'WAITING_APPROVAL',
             });
             break;
 
           case SERVER_EVENTS.TASK_COMPLETED:
-            if (timerId) clearInterval(timerId);
+            if (timerId) { clearInterval(timerId); timerId = null; }
             store.updateTaskState('SUCCESS');
+            store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
             store.setTimeoutCountdown(null);
             store.appendMessage({
@@ -109,8 +123,9 @@ export const connectAgentWS = (prompt: string) => {
             break;
 
           case SERVER_EVENTS.TASK_CANCELLED:
-            if (timerId) clearInterval(timerId);
+            if (timerId) { clearInterval(timerId); timerId = null; }
             store.updateTaskState('CANCELLED');
+            store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
             store.setTimeoutCountdown(null);
             store.setDraftMessage(null);
@@ -122,14 +137,15 @@ export const connectAgentWS = (prompt: string) => {
             break;
 
           case SERVER_EVENTS.ERROR:
-            if (timerId) clearInterval(timerId);
+            if (timerId) { clearInterval(timerId); timerId = null; }
             store.updateTaskState('FAILED');
+            store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
             store.setTimeoutCountdown(null);
             store.setError(message);
             store.appendMessage({
               sender: 'system',
-              text: `Error (${data.error_code}): ${message}`,
+              text: `Error (${(data as any).error_code}): ${message}`,
             });
             ws.close();
             break;
@@ -143,6 +159,7 @@ export const connectAgentWS = (prompt: string) => {
     };
 
     ws.onerror = () => {
+      if (timerId) { clearInterval(timerId); timerId = null; }
       store.setConnectionStatus('error');
       store.setError('WebSocket connection error');
       store.appendMessage({
@@ -160,6 +177,7 @@ export const connectAgentWS = (prompt: string) => {
       }
     };
   } catch (error: any) {
+    if (timerId) { clearInterval(timerId); timerId = null; }
     store.setConnectionStatus('error');
     store.setError(error.message || 'Failed connecting');
     store.appendMessage({

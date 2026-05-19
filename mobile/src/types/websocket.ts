@@ -2,14 +2,18 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'er
 
 export type TaskState =
   | 'IDLE'
+  | 'SCHEDULED'
+  | 'RUNNING'
+  | 'WAITING_APPROVAL'
+  | 'SUCCESS'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type AgentStep =
   | 'SEARCHING_VENDORS'
   | 'ANALYZING_PRICING'
   | 'DRAFTING_OUTREACH'
-  | 'SELF_REFLECTION'
-  | 'WAITING_APPROVAL'
-  | 'SUCCESS'
-  | 'CANCELLED'
-  | 'FAILED';
+  | 'SELF_REFLECTION';
 
 export interface BaseWebSocketEvent {
   event_type: string;
@@ -20,7 +24,7 @@ export interface BaseWebSocketEvent {
 export interface StatusUpdateEvent extends BaseWebSocketEvent {
   event_type: 'STATUS_UPDATE';
   task_state: TaskState;
-  agent_step: string;
+  agent_step: AgentStep;
   message: string;
 }
 
@@ -58,6 +62,11 @@ export type ServerEvent =
   | TaskCancelledEvent
   | ErrorEvent;
 
+export interface ClientStartTaskEvent {
+  event_type: 'START_TASK';
+  prompt: string;
+}
+
 export interface ClientApproveEvent {
   event_type: 'APPROVED';
   correlation_id: string;
@@ -70,12 +79,12 @@ export interface ClientStopEvent {
   task_id: string;
 }
 
-export type ClientEvent = ClientApproveEvent | ClientStopEvent;
+export type ClientEvent = ClientStartTaskEvent | ClientApproveEvent | ClientStopEvent;
 
 export interface Message {
   id: string;
   sender: 'user' | 'agent' | 'system';
   text: string;
   timestamp: Date;
-  agent_step?: string;
+  agent_step?: AgentStep | string;
 }

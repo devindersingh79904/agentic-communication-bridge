@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ConnectionStatus, TaskState, Message } from '../types/websocket';
+import { ConnectionStatus, TaskState, AgentStep, Message } from '../types/websocket';
 
 interface AgentState {
   // State variables
@@ -7,6 +7,8 @@ interface AgentState {
   socket: WebSocket | null;
   connectionStatus: ConnectionStatus;
   taskState: TaskState;
+  currentAgentStep: AgentStep | null;
+  currentPrompt: string | null;
   agentMessages: Message[];
   draftMessage: string | null;
   isAwaitingApproval: boolean;
@@ -21,6 +23,8 @@ interface AgentState {
   setSocket: (socket: WebSocket | null) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   updateTaskState: (state: TaskState) => void;
+  setCurrentAgentStep: (step: AgentStep | null) => void;
+  setCurrentPrompt: (prompt: string | null) => void;
   appendMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void;
   setDraftMessage: (draft: string | null) => void;
   setIsAwaitingApproval: (isAwaiting: boolean) => void;
@@ -42,6 +46,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   socket: null,
   connectionStatus: 'disconnected',
   taskState: 'IDLE',
+  currentAgentStep: null,
+  currentPrompt: null,
   agentMessages: [],
   draftMessage: null,
   isAwaitingApproval: false,
@@ -55,6 +61,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setSocket: (socket) => set({ socket }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
   updateTaskState: (taskState) => set({ taskState }),
+  setCurrentAgentStep: (currentAgentStep) => set({ currentAgentStep }),
+  setCurrentPrompt: (currentPrompt) => set({ currentPrompt }),
   appendMessage: (msg) =>
     set((state) => ({
       agentMessages: [
@@ -97,12 +105,30 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   connectWebSocket: (prompt) => {
-    // We defer the creation logic to the WebSocketService, which calls get().setSocket(...)
-    // and registers listeners. But we initialize state here first.
+    const { socket } = get();
+
+    // Duplicate connection guard
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      console.warn('WebSocket already open — ignoring duplicate connect');
+      return;
+    }
+
+    // Reset previous session state but preserve hostUrl and backendSteps
     get().resetStore();
+
+    // Store the current prompt
+    set({ currentPrompt: prompt });
+
+    // Optimistic UI: immediately set SCHEDULED state
+    set({ taskState: 'SCHEDULED' });
+
     get().appendMessage({
       sender: 'user',
       text: prompt,
+    });
+    get().appendMessage({
+      sender: 'system',
+      text: 'Task scheduled. Connecting to orchestration service...',
     });
   },
 
@@ -149,6 +175,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       socket: null,
       connectionStatus: 'disconnected',
       taskState: 'IDLE',
+      currentAgentStep: null,
+      currentPrompt: null,
       agentMessages: [],
       draftMessage: null,
       isAwaitingApproval: false,
@@ -156,6 +184,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       error: null,
       taskId: null,
       correlationId: null,
+      backendSteps: [],
     });
   },
 }));

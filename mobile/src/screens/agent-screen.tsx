@@ -17,7 +17,6 @@ const DEFAULT_STEPS = [
   { id: 'ANALYZING_PRICING', label: 'Analyzing Pricing' },
   { id: 'DRAFTING_OUTREACH', label: 'Drafting Outreach' },
   { id: 'SELF_REFLECTION', label: 'Self Reflection' },
-  { id: 'WAITING_APPROVAL', label: 'Approval Gate' },
 ];
 
 export const AgentScreen = () => {
@@ -26,6 +25,8 @@ export const AgentScreen = () => {
     setHostUrl,
     connectionStatus,
     taskState,
+    currentAgentStep,
+    currentPrompt,
     agentMessages,
     draftMessage,
     isAwaitingApproval,
@@ -36,6 +37,8 @@ export const AgentScreen = () => {
     resetStore,
     backendSteps,
     fetchMetadataEnums,
+    taskId,
+    correlationId,
   } = useAgentStore();
 
   const [promptInput, setPromptInput] = useState('Find reliable procurement vendors for custom server hardware.');
@@ -82,7 +85,6 @@ export const AgentScreen = () => {
   };
 
   const formatStepLabel = (step: string) => {
-    if (step === 'WAITING_APPROVAL') return 'Approval Gate';
     return step
       .toLowerCase()
       .split('_')
@@ -96,7 +98,8 @@ export const AgentScreen = () => {
     : DEFAULT_STEPS;
 
   const getStepStyle = (stepId: string) => {
-    const activeIndex = stepsToRender.findIndex((s) => s.id === taskState);
+    // Use currentAgentStep (not taskState) to determine stepper progress
+    const activeIndex = stepsToRender.findIndex((s) => s.id === currentAgentStep);
     const stepIndex = stepsToRender.findIndex((s) => s.id === stepId);
 
     if (taskState === 'SUCCESS') {
@@ -105,8 +108,12 @@ export const AgentScreen = () => {
     if (taskState === 'CANCELLED' || taskState === 'FAILED') {
       return { container: styles.stepInactive, text: styles.stepTextInactive };
     }
+    if (taskState === 'WAITING_APPROVAL') {
+      // All steps completed when waiting for approval
+      return { container: styles.stepCompleted, text: styles.stepTextCompleted };
+    }
 
-    if (stepId === taskState) {
+    if (stepId === currentAgentStep) {
       return { container: styles.stepActive, text: styles.stepTextActive };
     } else if (stepIndex < activeIndex && activeIndex !== -1) {
       return { container: styles.stepCompleted, text: styles.stepTextCompleted };
@@ -139,7 +146,7 @@ export const AgentScreen = () => {
           ]}
         >
           {!isUser && item.agent_step && (
-            <Text style={styles.messageStepLabel}>{item.agent_step.replace('_', ' ')}</Text>
+            <Text style={styles.messageStepLabel}>{String(item.agent_step).replace(/_/g, ' ')}</Text>
           )}
           <Text style={styles.messageText}>{item.text}</Text>
           <Text style={styles.messageTime}>
@@ -150,11 +157,13 @@ export const AgentScreen = () => {
     );
   };
 
+  const isRunning = connectionStatus !== 'disconnected' || taskState === 'SCHEDULED';
+
   return (
     <View style={styles.screen}>
       {/* Header */}
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Trybo Agentic Bridge</Text>
           <View style={styles.statusContainer}>
             <View style={[styles.statusDot, { backgroundColor: getStatusColor() }]} />
@@ -162,6 +171,18 @@ export const AgentScreen = () => {
               {connectionStatus.toUpperCase()} {taskState !== 'IDLE' ? `(${taskState})` : ''}
             </Text>
           </View>
+          {/* Show task and correlation IDs when available */}
+          {taskId && (
+            <Text style={styles.idBadge} numberOfLines={1}>
+              Task: {taskId.slice(0, 8)}… | Corr: {correlationId ? correlationId.slice(0, 8) + '…' : '–'}
+            </Text>
+          )}
+          {/* Show active prompt */}
+          {currentPrompt && taskState !== 'IDLE' && (
+            <Text style={styles.promptSubtitle} numberOfLines={1}>
+              "{currentPrompt}"
+            </Text>
+          )}
         </View>
 
         <View style={styles.hostConfigContainer}>
@@ -263,7 +284,7 @@ export const AgentScreen = () => {
 
       {/* Footer controls */}
       <View style={styles.footer}>
-        {connectionStatus === 'disconnected' ? (
+        {!isRunning ? (
           <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
@@ -278,7 +299,7 @@ export const AgentScreen = () => {
             </TouchableOpacity>
           </View>
         ) : (
-          !isAwaitingApproval && (
+          !isAwaitingApproval && taskState !== 'SUCCESS' && taskState !== 'CANCELLED' && taskState !== 'FAILED' && (
             <View style={styles.runningContainer}>
               <View style={styles.loaderRow}>
                 <ActivityIndicator size="small" color="#60A5FA" />
@@ -309,7 +330,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
@@ -335,6 +356,18 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#94A3B8',
     fontWeight: '600',
+  },
+  idBadge: {
+    fontSize: 9,
+    color: '#64748B',
+    marginTop: 2,
+    fontFamily: 'monospace',
+  },
+  promptSubtitle: {
+    fontSize: 11,
+    color: '#60A5FA',
+    marginTop: 2,
+    fontStyle: 'italic',
   },
   hostConfigContainer: {
     justifyContent: 'center',
