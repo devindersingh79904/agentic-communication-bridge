@@ -4,6 +4,7 @@ from app.core.middleware import CorrelationIdMiddleware
 from app.schemas.base_response import BaseSuccessResponse
 from app.utils.response_builder import success_response
 from app.api import metadata_api
+from app.websocket import agent_websocket
 
 # Initialize centralized logging before starting the app
 setup_logging()
@@ -16,6 +17,7 @@ app = FastAPI(
 
 # Register API Routers
 app.include_router(metadata_api.router)
+app.include_router(agent_websocket.router)
 
 # Add correlation ID middleware
 app.add_middleware(CorrelationIdMiddleware)
