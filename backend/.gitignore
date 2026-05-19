@@ -1,0 +1,81 @@
+# =========================
+# Python & Packaging
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+
+# =========================
+# Virtual Environments (uv)
+# =========================
+.venv/
+venv/
+env/
+.uv/
+
+# =========================
+# Environment Variables
+# =========================
+.env
+.env.*
+!.env.example
+!.env.template
+
+# =========================
+# Testing & Coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# =========================
+# Logs & Databases
+# =========================
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# =========================
+# macOS
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Trashes
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+
+# =========================
+# IDEs & Editors
+# =========================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm / IntelliJ
+.idea/
+*.iml
+out/
+
+# General
+*.swp
+*.swo
+*~
+
+# =========================
+# Typing & Linting
+# =========================
+.mypy_cache/
+.ruff_cache/
