@@ -10,4 +10,5 @@ dependencies = [
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
     "uvicorn>=0.47.0",
+    "websockets>=14.0",
 ]
