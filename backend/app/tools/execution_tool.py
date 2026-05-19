@@ -11,5 +11,7 @@ async def execution_tool(state: WorkflowState) -> None:
     """
     logger.info("Execution tool execution started")
     await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)
-    state.execution_result = "Approved outreach executed successfully"
+    state.execution_result = (
+        f"Approved workflow executed successfully for task: {state.prompt}"
+    )
     logger.info("Execution tool execution completed")

@@ -36,6 +36,7 @@ class TaskCompletedEvent(BaseWebSocketEvent):
     event_type: WebSocketEventType = WebSocketEventType.TASK_COMPLETED
     task_state: TaskState
     message: str
+    final_response: Optional[str] = None
 
 class TaskCancelledEvent(BaseWebSocketEvent):
     """

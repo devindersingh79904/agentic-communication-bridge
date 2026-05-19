@@ -17,25 +17,29 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str) -> str:
     task prompt and analysis summary for context.
     """
     logger.info("Draft generation started")
-    response = await client.chat.completions.create(
-        model=config.OPENAI_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a professional procurement assistant. Generate extremely concise vendor outreach messages."
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Task: {prompt}\n\n"
-                    f"Analysis: {analysis_summary}\n\n"
-                    f"Generate a concise professional outreach message for the above task."
-                )
-            }
-        ],
-        temperature=config.OPENAI_TEMPERATURE,
-        max_tokens=150
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=config.OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a professional procurement assistant. Generate extremely concise vendor outreach messages."
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Task: {prompt}\n\n"
+                        f"Analysis: {analysis_summary}\n\n"
+                        f"Generate a concise professional outreach message for the above task."
+                    )
+                }
+            ],
+            temperature=config.OPENAI_TEMPERATURE,
+            max_tokens=150
+        )
+    except Exception as e:
+        logger.exception("OpenAI request failed during draft generation")
+        raise
     draft = response.choices[0].message.content.strip()
     
     # Validate LLM output
@@ -69,21 +73,25 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
             f"Regenerate a better outreach draft aligned with this feedback, while keeping it concise and professional:\n\n{draft}"
         )
         
-    response = await client.chat.completions.create(
-        model=config.OPENAI_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."
-            },
-            {
-                "role": "user",
-                "content": user_content
-            }
-        ],
-        temperature=config.OPENAI_TEMPERATURE,
-        max_tokens=150
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=config.OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ],
+            temperature=config.OPENAI_TEMPERATURE,
+            max_tokens=150
+        )
+    except Exception as e:
+        logger.exception("OpenAI request failed during self-reflection")
+        raise
     improved = response.choices[0].message.content.strip()
     
     # Validate LLM output

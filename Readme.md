@@ -13,10 +13,14 @@ The application operates as a real-time state machine where orchestration steps 
    - `ANALYZING_PRICING` → Runs `analysis_tool` (Price/Offer Analysis)
    - `DRAFTING_OUTREACH` → Runs `draft_tool` (OpenAI generates outreach using the user's prompt)
    - `SELF_REFLECTION` → Runs `reflection_tool` (OpenAI reviews and improves the draft)
-4. **Approval Gate (`WAITING_APPROVAL`)**: The backend pauses and waits for client consent with a configurable countdown timer.
+4. **Approval Gate & Iterative Regeneration (`WAITING_APPROVAL`)**: The backend pauses and waits for client consent. 
+   - **Approve**: Transitions to `EXECUTING` → `SUCCESS`.
+   - **Reject**: Receives rejection feedback, increments the regeneration counter, and loops back to `DRAFTING_OUTREACH` / `SELF_REFLECTION` for refinement.
+   - **Stop**: Explicitly cancels execution at any phase (`CANCELLED`).
+   - The loop is bounded by `MAX_REGENERATION_ATTEMPTS` to prevent infinite loops.
 5. **Execution & Final States** (`WAITING_APPROVAL → EXECUTING → SUCCESS`):
-   - If approved, transitions to `EXECUTING`, calls `execution_tool`, then transitions to `SUCCESS`.
-   - If the user clicks **Stop Run** or the timeout expires, it immediately cancels (`CANCELLED`).
+   - If approved, transitions to `EXECUTING`, calls `execution_tool`, then transitions to `SUCCESS`, streaming the final AI response payload.
+   - If the user clicks **Stop** or the timeout expires, it cancels (`CANCELLED`).
 
 Each tool reads/writes shared `WorkflowState` fields and pauses for a globally configurable delay (`AGENT_STEP_DELAY_SECONDS`).
 
@@ -54,6 +58,12 @@ OPENAI_TEMPERATURE=0.3
 # =========================
 # Configurable delay in seconds for every workflow step
 AGENT_STEP_DELAY_SECONDS=2
+
+# =========================
+# Regeneration Configuration
+# =========================
+# Bounded limit for iterative LLM regeneration attempts
+MAX_REGENERATION_ATTEMPTS=3
 ```
 
 ---

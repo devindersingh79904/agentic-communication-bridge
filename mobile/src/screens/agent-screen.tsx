@@ -87,6 +87,9 @@ export const AgentScreen = () => {
   };
 
   const getStatusColor = () => {
+    if (taskState === 'FAILED') {
+      return '#EF4444';
+    }
     switch (connectionStatus) {
       case 'connected':
         return '#10B981';
@@ -272,7 +275,7 @@ export const AgentScreen = () => {
       />
 
       {/* Awaiting Approval panel */}
-      {isAwaitingApproval && draftMessage && (
+      {isAwaitingApproval && draftMessage && taskState !== 'EXECUTING' && (
         <View style={styles.approvalPanel}>
           <View style={styles.approvalHeader}>
             <Text style={styles.approvalTitle}>Awaiting Outreach Approval</Text>
@@ -320,6 +323,14 @@ export const AgentScreen = () => {
 
       {/* Footer controls */}
       <View style={styles.footer}>
+        {taskState === 'FAILED' && error && (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorText}>⚠️ AI Execution Failed</Text>
+            <Text style={styles.errorSubText}>{error}</Text>
+            <Text style={styles.retryHintText}>Please verify configuration and try starting a new run.</Text>
+          </View>
+        )}
+
         {!isRunning ? (
           <View style={styles.inputContainer}>
             <TextInput
@@ -351,7 +362,7 @@ export const AgentScreen = () => {
         )}
 
         {agentMessages.length > 0 && connectionStatus === 'disconnected' && (
-          <TouchableOpacity style={styles.resetButton} onPress={resetStore}>
+          <TouchableOpacity style={styles.resetButton} onPress={() => resetStore(true)}>
             <Text style={styles.resetButtonText}>Clear Session</Text>
           </TouchableOpacity>
         )}
@@ -723,5 +734,30 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontSize: 12,
     fontWeight: '500',
+  },
+  errorBanner: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderColor: '#EF4444',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  errorText: {
+    color: '#F87171',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  errorSubText: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  retryHintText: {
+    color: '#EF4444',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '600',
   },
 });

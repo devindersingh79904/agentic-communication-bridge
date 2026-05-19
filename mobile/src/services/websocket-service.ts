@@ -117,7 +117,17 @@ export const connectAgentWS = (prompt: string) => {
             store.updateTaskState('SUCCESS');
             store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
+            store.setIsRegenerating(false);
             store.setTimeoutCountdown(null);
+
+            const completedData = data as import('../types/websocket').TaskCompletedEvent;
+            if (completedData.final_response) {
+              store.appendMessage({
+                sender: 'agent',
+                text: completedData.final_response,
+              });
+            }
+
             store.appendMessage({
               sender: 'system',
               text: `Success: ${message}`,
@@ -130,6 +140,7 @@ export const connectAgentWS = (prompt: string) => {
             store.updateTaskState('CANCELLED');
             store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
+            store.setIsRegenerating(false);
             store.setTimeoutCountdown(null);
             store.setDraftMessage(null);
             store.appendMessage({
@@ -145,6 +156,7 @@ export const connectAgentWS = (prompt: string) => {
             store.updateTaskState('FAILED');
             store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
+            store.setIsRegenerating(false);
             store.setTimeoutCountdown(null);
             store.setError(errorData.message);
             store.appendMessage({

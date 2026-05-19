@@ -42,7 +42,7 @@ interface AgentState {
   disconnectWebSocket: () => void;
   sendApprovalResponse: (action: ApprovalAction, feedback?: string) => void;
   sendStop: () => void;
-  resetStore: () => void;
+  resetStore: (clearMessages?: boolean) => void;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -122,7 +122,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
 
     // Reset previous session state but preserve hostUrl and backendSteps
-    get().resetStore();
+    get().resetStore(true);
 
     // Store the current prompt
     set({ currentPrompt: prompt });
@@ -150,6 +150,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   sendApprovalResponse: (action, feedback) => {
     const { socket, taskId, correlationId } = get();
+    set({ isAwaitingApproval: false });
+    if (action === 'REJECT') {
+      set({ isRegenerating: true });
+    }
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
@@ -176,18 +180,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  resetStore: () => {
+  resetStore: (clearMessages = false) => {
     const { socket } = get();
     if (socket) {
       socket.close();
     }
-    set({
+    set((state) => ({
       socket: null,
       connectionStatus: 'disconnected',
       taskState: 'IDLE',
       currentAgentStep: null,
       currentPrompt: null,
-      agentMessages: [],
+      agentMessages: clearMessages ? [] : state.agentMessages,
       draftMessage: null,
       isAwaitingApproval: false,
       rejectionFeedback: '',
@@ -197,6 +201,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       taskId: null,
       correlationId: null,
       backendSteps: [],
-    });
+    }));
   },
 }));

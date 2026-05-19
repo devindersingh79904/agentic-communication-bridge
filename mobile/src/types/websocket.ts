@@ -42,6 +42,7 @@ export interface TaskCompletedEvent extends BaseWebSocketEvent {
   event_type: 'TASK_COMPLETED';
   task_state: 'SUCCESS';
   message: string;
+  final_response?: string;
 }
 
 export interface TaskCancelledEvent extends BaseWebSocketEvent {

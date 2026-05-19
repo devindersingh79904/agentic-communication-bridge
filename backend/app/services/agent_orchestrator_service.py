@@ -179,11 +179,15 @@ async def safe_send_json(websocket: WebSocket, payload: dict) -> None:
 
 async def send_terminal_event(websocket: WebSocket, task_id: str, event: Any) -> None:
     """
-    Sends a terminal event ensuring it's emitted only once.
+    Sends a terminal event ensuring it's emitted only once, and closes the WebSocket connection.
     """
     task_info = active_tasks.get(task_id)
     if not task_info:
         await safe_send_json(websocket, event.model_dump())
+        try:
+            await websocket.close()
+        except Exception:
+            pass
         return
         
     if task_info.get("terminal_emitted"):
@@ -195,6 +199,10 @@ async def send_terminal_event(websocket: WebSocket, task_id: str, event: Any) ->
         
     task_info["terminal_emitted"] = True
     await safe_send_json(websocket, event.model_dump())
+    try:
+        await websocket.close()
+    except Exception:
+        pass
 
 async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: str, state: WorkflowState) -> None:
     """
@@ -257,14 +265,17 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             try:
                 await draft_tool(state)
             except Exception as e:
-                logger.error("Draft generation failed: %s", str(e))
+                logger.exception("Draft generation failed")
                 if transition_task_state(task_id, TaskState.FAILED):
                     error_event = ErrorEvent(
                         correlation_id=correlation_id,
                         task_id=task_id,
                         task_state=TaskState.FAILED,
-                        error_code="LLM_GENERATION_FAILED",
-                        message=f"Draft generation failed: {str(e)}"
+                        error_code="LLM_EXECUTION_FAILED",
+                        message=(
+                            "AI outreach generation failed. "
+                            "Please verify OpenAI configuration and try again."
+                        )
                     )
                     await send_terminal_event(websocket, task_id, error_event)
                 return
@@ -283,14 +294,17 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             try:
                 await reflection_tool(state)
             except Exception as e:
-                logger.error("Self-reflection failed: %s", str(e))
+                logger.exception("Self-reflection failed")
                 if transition_task_state(task_id, TaskState.FAILED):
                     error_event = ErrorEvent(
                         correlation_id=correlation_id,
                         task_id=task_id,
                         task_state=TaskState.FAILED,
-                        error_code="LLM_GENERATION_FAILED",
-                        message=f"Self-reflection failed: {str(e)}"
+                        error_code="LLM_EXECUTION_FAILED",
+                        message=(
+                            "AI draft self-reflection failed. "
+                            "Please verify OpenAI configuration and try again."
+                        )
                     )
                     await send_terminal_event(websocket, task_id, error_event)
                 return
@@ -388,7 +402,23 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         )
         await safe_send_json(websocket, event.model_dump())
             
-        await execution_tool(state)
+        try:
+            await execution_tool(state)
+        except Exception as e:
+            logger.exception("Execution approved, but workflow execution failed")
+            if transition_task_state(task_id, TaskState.FAILED):
+                error_event = ErrorEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.FAILED,
+                    error_code="EXECUTION_FAILED",
+                    message=(
+                        "Execution approved, but workflow execution failed. "
+                        "Please verify system settings and try again."
+                    )
+                )
+                await send_terminal_event(websocket, task_id, error_event)
+            return
         
         # Step 7: SUCCESS
         if transition_task_state(task_id, TaskState.SUCCESS):
@@ -396,7 +426,8 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 correlation_id=correlation_id,
                 task_id=task_id,
                 task_state=TaskState.SUCCESS,
-                message=f"Task successfully executed. Outreach finalized. Result: {state.execution_result}"
+                message=f"Task successfully executed. Outreach finalized. Result: {state.execution_result}",
+                final_response=state.improved_draft or state.draft
             )
             await send_terminal_event(websocket, task_id, completed_event)
             logger.info("Orchestration completed successfully")
@@ -419,7 +450,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 task_id=task_id,
                 task_state=TaskState.FAILED,
                 error_code="ORCHESTRATION_FAILURE",
-                message=f"Orchestration unexpected failure: {str(e)}"
+                message="An unexpected system error occurred. Please verify configuration and try again."
             )
             await send_terminal_event(websocket, task_id, error_event)
     finally:
