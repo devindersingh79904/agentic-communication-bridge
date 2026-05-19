@@ -1,8 +1,16 @@
 import uuid
+import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.core.logger import get_logger, set_correlation_id, correlation_id_ctx
-from app.core.enums import TaskState, AgentStep
-from app.schemas.websocket_schema import StatusUpdateEvent
+
+from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
+from app.core.enums import WebSocketEventType
+from app.services.agent_orchestrator_service import (
+    register_task,
+    set_task_reference,
+    approve_task,
+    cancel_task,
+    run_orchestration
+)
 
 router = APIRouter(tags=["WebSocket"])
 logger = get_logger("websocket.agent")
@@ -12,39 +20,51 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket connection endpoint for agent interaction.
     """
-    # Accept the incoming connection
     await websocket.accept()
     
-    # Extract X-Correlation-ID header if provided, otherwise generate UUID4 correlation_id
+    # Extract correlation_id or generate a new one
     correlation_id = websocket.headers.get("x-correlation-id")
     if not correlation_id:
         correlation_id = str(uuid.uuid4())
         
-    # Propagate correlation_id using contextvars
-    token = set_correlation_id(correlation_id)
+    # Generate task_id
+    task_id = str(uuid.uuid4())
+    
+    # Propagate correlation_id and task_id using contextvars
+    corr_token = set_correlation_id(correlation_id)
+    task_token = set_task_id(task_id)
     
     logger.info("WebSocket connection established")
     
+    # Create the approval event and register task
+    approval_event = asyncio.Event()
+    register_task(task_id, websocket, approval_event)
+    
+    # Spawn background orchestration task independently of websocket receive loop
+    orchestration_task = asyncio.create_task(
+        run_orchestration(websocket, correlation_id, task_id)
+    )
+    set_task_reference(task_id, orchestration_task)
+    
     try:
-        # Send initial StatusUpdateEvent
-        initial_event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=None,
-            task_state=TaskState.RUNNING,
-            agent_step=AgentStep.SEARCHING_VENDORS,
-            message="WebSocket connection established successfully"
-        )
-        await websocket.send_json(initial_event.model_dump())
-        
-        # Receive websocket payloads
         while True:
+            # Receive websocket payloads
             payload = await websocket.receive_json()
             logger.info("WebSocket payload received: %s", payload)
             
+            event_type = payload.get("event_type")
+            if event_type == WebSocketEventType.APPROVED:
+                approve_task(task_id)
+            elif event_type == WebSocketEventType.STOP:
+                await cancel_task(task_id)
+                
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
     except Exception:
         logger.exception("WebSocket unexpected failure")
     finally:
+        # Cancel the orchestration task and cleanup the task session on connection drop
+        await cancel_task(task_id)
         # Clear contextvars correctly
-        correlation_id_ctx.reset(token)
+        correlation_id_ctx.reset(corr_token)
+        task_id_ctx.reset(task_token)
