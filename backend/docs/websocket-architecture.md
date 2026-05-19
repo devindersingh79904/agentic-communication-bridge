@@ -224,4 +224,20 @@ The backend incorporates real-time OpenAI Chat Completion to generate and improv
 - `OPENAI_MODEL`: Configurable via the environment (defaults to `gpt-4.1-mini`).
 - `OPENAI_TEMPERATURE`: Configurable parameter (defaults to `0.3`) allowing runtime tuning of LLM response creativity/determinism. Lower values ensure consistent, professional draft messages and minimize randomness in demonstration flows.
 
+---
+
+## 7. Lightweight Tool Architecture
+
+Instead of adopting heavy orchestration frameworks (like LangGraph or LangChain), the orchestrator steps are refactored into isolated, modular async functions under `app/tools/`:
+- **`research_tool`**: Simulates vendor discovery and returns mock structured data.
+- **`analysis_tool`**: Simulates pricing and vendor analysis.
+- **`draft_tool`**: Integrates OpenAI's Chat Completion to generate the initial outreach draft.
+- **`reflection_tool`**: Performs self-reflection on the draft using the LLM.
+- **`execution_tool`**: Executes the outreach after the approval gate is satisfied.
+
+### Characteristics:
+- **Modular Async Flow**: Every tool is written as a lightweight, independent async function that isolates its logic and handles its own execution tracing logs.
+- **Configurable Delays**: Simulates latency using `await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)`, which is controlled globally via the `AGENT_STEP_DELAY_SECONDS` environment variable (defaults to `2` seconds).
+- **Tracability**: Centralized log events are triggered at the start and completion of each tool, propagating `correlation_id` and `task_id` dynamically.
+
 

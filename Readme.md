@@ -4,19 +4,20 @@ A premium, production-ready human-in-the-loop AI agentic system. It features a R
 
 ## How it Works
 
-The application operates as a real-time state machine:
+The application operates as a real-time state machine where orchestration steps are isolated into lightweight, modular async tools (`app/tools/`):
 
 1. **Client Triggers Agent**: The client connects to the WebSocket endpoint `/v1/agent/connect`.
-2. **State Machine Execution**: The backend executes the workflow:
-   - `SEARCHING_VENDORS` (Vendor Discovery)
-   - `ANALYZING_PRICING` (Price/Offer Analysis)
-   - `DRAFTING_OUTREACH` (OpenAI generates the initial outreach message)
-   - `SELF_REFLECTION` (OpenAI reviews and improves the generated draft)
+2. **State Machine Execution**: The backend executes the workflow sequentially:
+   - `SEARCHING_VENDORS` -> Runs `research_tool` (Vendor Discovery)
+   - `ANALYZING_PRICING` -> Runs `analysis_tool` (Price/Offer Analysis)
+   - `DRAFTING_OUTREACH` -> Runs `draft_tool` (OpenAI generates the initial outreach message)
+   - `SELF_REFLECTION` -> Runs `reflection_tool` (OpenAI reviews and improves the generated draft)
 3. **Approval Gate (`WAITING_APPROVAL`)**: The backend pauses execution and waits for client consent. A configurable countdown timer runs (e.g., 10 seconds).
-4. **Final States**:
-   - If the user clicks **Approve & Finalize**, it completes the task (`SUCCESS`).
-   - If the user clicks **Stop Run**, it immediately cancels (`CANCELLED`).
-   - If the countdown runs out, it automatically cancels (`CANCELLED`).
+4. **Execution & Final States**:
+   - If approved, it calls the `execution_tool` to finalize outreach and transitions to `SUCCESS`.
+   - If the user clicks **Stop Run** or the timeout expires, it immediately cancels (`CANCELLED`).
+
+Each tool execution pauses for a globally configurable simulated delay time (`AGENT_STEP_DELAY_SECONDS`), allowing clean debugging and execution tracking.
 
 ---
 
@@ -46,6 +47,12 @@ OPENAI_MODEL=gpt-4.1-mini
 
 # Configurable temperature parameter for draft determinism
 OPENAI_TEMPERATURE=0.3
+
+# =========================
+# Agent Workflow Configuration
+# =========================
+# Configurable delay in seconds for every workflow step
+AGENT_STEP_DELAY_SECONDS=2
 ```
 
 ---

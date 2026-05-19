@@ -13,7 +13,11 @@ from app.schemas.websocket_schema import (
     TaskCancelledEvent,
     ErrorEvent
 )
-from app.services.llm_service import generate_outreach_draft, self_reflect_draft
+from app.tools.research_tool import research_tool
+from app.tools.analysis_tool import analysis_tool
+from app.tools.draft_tool import draft_tool
+from app.tools.reflection_tool import reflection_tool
+from app.tools.execution_tool import execution_tool
 
 logger = get_logger("services.agent_orchestrator")
 
@@ -97,7 +101,7 @@ async def safe_send_json(websocket: WebSocket, payload: dict) -> None:
 
 async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: str) -> None:
     """
-    Simulates the async agent orchestration workflow lifecycle.
+    Simulates the async agent orchestration workflow lifecycle using lightweight tools.
     """
     # Propagate correlation_id and task_id inside the background task context
     corr_token = set_correlation_id(correlation_id)
@@ -117,7 +121,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             message="Searching for vendors..."
         )
         await safe_send_json(websocket, event.model_dump())
-        await asyncio.sleep(1.5)
+        research_data = await research_tool()
         
         # Step 2: ANALYZING_PRICING
         logger.info("Entering step: ANALYZING_PRICING")
@@ -129,7 +133,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             message="Analyzing pricing..."
         )
         await safe_send_json(websocket, event.model_dump())
-        await asyncio.sleep(1.5)
+        summary = await analysis_tool(research_data)
         
         # Step 3: DRAFTING_OUTREACH
         logger.info("Entering step: DRAFTING_OUTREACH")
@@ -143,9 +147,9 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         await safe_send_json(websocket, event.model_dump())
         
         try:
-            draft = await generate_outreach_draft()
+            draft = await draft_tool(summary)
         except Exception as e:
-            logger.error("LLM draft generation failed: %s", str(e))
+            logger.error("Draft generation failed: %s", str(e))
             error_event = ErrorEvent(
                 correlation_id=correlation_id,
                 task_id=task_id,
@@ -156,8 +160,6 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             await safe_send_json(websocket, error_event.model_dump())
             return
             
-        await asyncio.sleep(1.5)
-        
         # Step 4: SELF_REFLECTION
         logger.info("Entering step: SELF_REFLECTION")
         event = StatusUpdateEvent(
@@ -170,9 +172,9 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         await safe_send_json(websocket, event.model_dump())
         
         try:
-            improved_draft = await self_reflect_draft(draft)
+            improved_draft = await reflection_tool(draft)
         except Exception as e:
-            logger.error("LLM self-reflection failed: %s", str(e))
+            logger.error("Self-reflection failed: %s", str(e))
             error_event = ErrorEvent(
                 correlation_id=correlation_id,
                 task_id=task_id,
@@ -183,8 +185,6 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             await safe_send_json(websocket, error_event.model_dump())
             return
             
-        await asyncio.sleep(1.5)
-        
         # Step 5: WAITING_APPROVAL
         logger.info("Orchestration paused, waiting for user approval")
         active_tasks[task_id]["task_state"] = TaskState.WAITING_APPROVAL
@@ -228,11 +228,14 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         logger.info("Orchestration resumed after approval")
         active_tasks[task_id]["task_state"] = TaskState.SUCCESS
         
+        # Execute the execution tool
+        execution_result = await execution_tool()
+        
         completed_event = TaskCompletedEvent(
             correlation_id=correlation_id,
             task_id=task_id,
             task_state=TaskState.SUCCESS,
-            message="Task successfully executed. Outreach finalized."
+            message=f"Task successfully executed. Outreach finalized. Result: {execution_result}"
         )
         await safe_send_json(websocket, completed_event.model_dump())
         logger.info("Orchestration completed successfully")
