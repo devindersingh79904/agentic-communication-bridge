@@ -13,6 +13,7 @@ from app.schemas.websocket_schema import (
     TaskCancelledEvent,
     ErrorEvent
 )
+from app.services.llm_service import generate_outreach_draft, self_reflect_draft
 
 logger = get_logger("services.agent_orchestrator")
 
@@ -140,6 +141,21 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             message="Drafting outreach..."
         )
         await safe_send_json(websocket, event.model_dump())
+        
+        try:
+            draft = await generate_outreach_draft()
+        except Exception as e:
+            logger.error("LLM draft generation failed: %s", str(e))
+            error_event = ErrorEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.FAILED,
+                error_code="LLM_GENERATION_FAILED",
+                message=f"Draft generation failed: {str(e)}"
+            )
+            await safe_send_json(websocket, error_event.model_dump())
+            return
+            
         await asyncio.sleep(1.5)
         
         # Step 4: SELF_REFLECTION
@@ -152,6 +168,21 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             message="Performing self-reflection..."
         )
         await safe_send_json(websocket, event.model_dump())
+        
+        try:
+            improved_draft = await self_reflect_draft(draft)
+        except Exception as e:
+            logger.error("LLM self-reflection failed: %s", str(e))
+            error_event = ErrorEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.FAILED,
+                error_code="LLM_GENERATION_FAILED",
+                message=f"Self-reflection failed: {str(e)}"
+            )
+            await safe_send_json(websocket, error_event.model_dump())
+            return
+            
         await asyncio.sleep(1.5)
         
         # Step 5: WAITING_APPROVAL
@@ -163,7 +194,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             correlation_id=correlation_id,
             task_id=task_id,
             task_state=TaskState.WAITING_APPROVAL,
-            draft_message="Hello vendor, we would like to discuss pricing...",
+            draft_message=improved_draft,
             message="Draft generated. Awaiting user approval."
         )
         await safe_send_json(websocket, app_req_event.model_dump())

@@ -196,3 +196,30 @@ All WebSocket event payloads derive from `BaseWebSocketEvent` containing the tra
   "task_id": "8fa16de3-d144-482d-83b9-a29bc0192d29"
 }
 ```
+
+---
+
+## 6. LLM Integration Flow
+
+The backend incorporates real-time OpenAI Chat Completion to generate and improve vendor outreach drafts dynamically within the orchestration loop.
+
+### Steps
+1. **DRAFTING_OUTREACH**: Calls `generate_outreach_draft()` targeting the OpenAI API.
+   - **System Prompt**: `"You are a professional procurement assistant. Generate extremely concise vendor outreach messages."`
+   - **User Prompt**: `"Generate a concise professional outreach message requesting vendor pricing discussion."`
+2. **SELF_REFLECTION**: Calls `self_reflect_draft(draft)` targeting the OpenAI API.
+   - **System Prompt**: `"You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."`
+   - **User Prompt**: `"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"`
+3. **WAITING_APPROVAL**: Sends the refined draft message to the client via `ApprovalRequiredEvent`.
+
+### Error Boundaries & Handling
+- If OpenAI API raises an exception (e.g. invalid API key, network timeout), the orchestrator catches it, logs the error, sends a WebSocket `ErrorEvent` with `error_code="LLM_GENERATION_FAILED"`, and gracefully aborts execution.
+- No retry mechanisms are implemented to maintain simple, predictable execution timing.
+
+### Token Optimization
+- Requests specify `max_tokens=150` to restrict generation length, maintain low latency, and optimize token usage.
+
+### Configuration
+- `OPENAI_API_KEY`: Fetched from the environment. Validated at startup; the server fails fast if this variable is missing or empty.
+- `OPENAI_MODEL`: Configurable via the environment (defaults to `gpt-4.1-mini`).
+

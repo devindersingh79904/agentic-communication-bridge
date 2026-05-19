@@ -6,3 +6,10 @@ load_dotenv()
 
 # Centralized configuration variables
 APPROVAL_TIMEOUT_SECONDS: int = int(os.getenv("APPROVAL_TIMEOUT_SECONDS", "10"))
+
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "").strip()
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is required and cannot be empty")
+
+OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
+
