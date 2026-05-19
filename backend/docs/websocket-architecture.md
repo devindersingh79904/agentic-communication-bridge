@@ -222,4 +222,6 @@ The backend incorporates real-time OpenAI Chat Completion to generate and improv
 ### Configuration
 - `OPENAI_API_KEY`: Fetched from the environment. Validated at startup; the server fails fast if this variable is missing or empty.
 - `OPENAI_MODEL`: Configurable via the environment (defaults to `gpt-4.1-mini`).
+- `OPENAI_TEMPERATURE`: Configurable parameter (defaults to `0.3`) allowing runtime tuning of LLM response creativity/determinism. Lower values ensure consistent, professional draft messages and minimize randomness in demonstration flows.
+
 

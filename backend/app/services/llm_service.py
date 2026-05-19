@@ -18,6 +18,7 @@ async def generate_outreach_draft() -> str:
             {"role": "system", "content": "You are a professional procurement assistant. Generate extremely concise vendor outreach messages."},
             {"role": "user", "content": "Generate a concise professional outreach message requesting vendor pricing discussion."}
         ],
+        temperature=config.OPENAI_TEMPERATURE,
         max_tokens=150
     )
     draft = response.choices[0].message.content.strip()
@@ -35,6 +36,7 @@ async def self_reflect_draft(draft: str) -> str:
             {"role": "system", "content": "You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."},
             {"role": "user", "content": f"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"}
         ],
+        temperature=config.OPENAI_TEMPERATURE,
         max_tokens=150
     )
     improved = response.choices[0].message.content.strip()
