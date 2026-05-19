@@ -11,12 +11,38 @@ client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 # Maximum allowed output length for defensive truncation
 MAX_OUTPUT_LENGTH = 2000
 
-async def generate_outreach_draft(prompt: str, analysis_summary: str) -> str:
+async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_vendor: Optional[dict] = None) -> str:
     """
     Generates a professional and concise vendor outreach message using the user's
     task prompt and analysis summary for context.
     """
     logger.info("Draft generation started")
+    
+    location_context = (
+        f"Procurement region:\n"
+        f"City: {config.DEFAULT_CITY}\n"
+        f"Locality: {config.DEFAULT_LOCALITY}\n"
+        f"Pincode: {config.DEFAULT_PINCODE}"
+    )
+
+    vendor_context = ""
+    if selected_vendor:
+        vendor_context = (
+            f"Preferred vendor:\n"
+            f"{selected_vendor['name']} located in {selected_vendor['location']}"
+        )
+
+    user_content = (
+        f"{location_context}\n\n"
+        f"{vendor_context}\n\n"
+        f"Task: {prompt}\n\n"
+        f"Analysis: {analysis_summary}\n\n"
+        f"Generate a concise, realistic, professional vendor outreach email.\n\n"
+        f"Sign the message as:\n"
+        f"{config.DEFAULT_USER_NAME}\n"
+        f"{config.DEFAULT_COMPANY_NAME}"
+    )
+
     try:
         response = await client.chat.completions.create(
             model=config.OPENAI_MODEL,
@@ -27,15 +53,7 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str) -> str:
                 },
                 {
                     "role": "user",
-                    "content": (
-                        f"User procurement region:\n"
-                        f"City: {config.DEFAULT_CITY}\n"
-                        f"Locality: {config.DEFAULT_LOCALITY}\n"
-                        f"Pincode: {config.DEFAULT_PINCODE}\n\n"
-                        f"Task: {prompt}\n\n"
-                        f"Analysis: {analysis_summary}\n\n"
-                        f"Generate a concise professional outreach message for the above task."
-                    )
+                    "content": user_content
                 }
             ],
             temperature=config.OPENAI_TEMPERATURE,
@@ -91,14 +109,24 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
             messages=[
                 {
                     "role": "system",
-                    "content": "You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."
+                    "content": (
+                        "You are a senior procurement communication reviewer.\n"
+                        "Critically evaluate the outreach message for:\n"
+                        "* professionalism\n"
+                        "* clarity\n"
+                        "* persuasion\n"
+                        "* specificity\n"
+                        "* business tone\n\n"
+                        "Then rewrite the message into a significantly stronger, "
+                        "more realistic, business-ready outreach while keeping it concise."
+                    )
                 },
                 {
                     "role": "user",
                     "content": user_content
                 }
             ],
-            temperature=config.OPENAI_TEMPERATURE,
+            temperature=config.REFLECTION_TEMPERATURE,
             max_tokens=150
         )
     except Exception as e:

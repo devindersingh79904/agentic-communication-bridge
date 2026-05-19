@@ -22,6 +22,7 @@ class WorkflowState:
 
     research_data: Optional[dict] = None
     analysis_summary: Optional[str] = None
+    selected_vendor: Optional[dict] = None
 
     draft: Optional[str] = None
     improved_draft: Optional[str] = None

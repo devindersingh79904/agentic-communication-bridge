@@ -14,8 +14,9 @@ async def research_tool(state: WorkflowState) -> None:
     state.research_data = {
         "prompt": state.prompt,
         "vendors": [
-            "Vendor A",
-            "Vendor B"
+            {"name": "TechNova Systems", "location": "Marathahalli"},
+            {"name": "ByteEdge Computers", "location": "Whitefield"},
+            {"name": "NextGen PC Hub", "location": "Bellandur"}
         ]
     }
     logger.info("Research tool execution completed")

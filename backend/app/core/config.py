@@ -23,3 +23,7 @@ MAX_REGENERATION_ATTEMPTS: int = int(os.getenv("MAX_REGENERATION_ATTEMPTS", "3")
 DEFAULT_CITY: str = os.getenv("DEFAULT_CITY", "Bangalore").strip()
 DEFAULT_LOCALITY: str = os.getenv("DEFAULT_LOCALITY", "Marathahalli").strip()
 DEFAULT_PINCODE: str = os.getenv("DEFAULT_PINCODE", "560037").strip()
+
+DEFAULT_USER_NAME: str = os.getenv("DEFAULT_USER_NAME", "Devinder Singh").strip()
+DEFAULT_COMPANY_NAME: str = os.getenv("DEFAULT_COMPANY_NAME", "DSP Technologies").strip()
+REFLECTION_TEMPERATURE: float = float(os.getenv("REFLECTION_TEMPERATURE", "0.6"))

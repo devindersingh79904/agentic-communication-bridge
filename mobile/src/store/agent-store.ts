@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { ConnectionStatus, TaskState, AgentStep, Message, ApprovalAction } from '../types/websocket';
+import { getCleanHost, getHttpBaseUrl } from '../constants/config';
+import { CLIENT_EVENTS } from '../constants/websocket-events';
 
 interface AgentState {
   // State variables
@@ -46,7 +48,7 @@ interface AgentState {
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
-  hostUrl: 'localhost:8000',
+  hostUrl: getCleanHost(),
   socket: null,
   connectionStatus: 'disconnected',
   taskState: 'IDLE',
@@ -92,15 +94,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setIds: (taskId, correlationId) => set({ taskId, correlationId }),
 
   fetchMetadataEnums: async () => {
-    const { hostUrl } = get();
-    const cleanHost = hostUrl.replace(/^(ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)/, '');
-    let protocol = 'http';
-    if (typeof window !== 'undefined' && window.location) {
-      protocol = window.location.protocol === 'https:' ? 'https' : 'http';
-    } else {
-      protocol = cleanHost.includes('localhost') || cleanHost.includes('127.0.0.1') ? 'http' : 'https';
-    }
-    const url = `${protocol}://${cleanHost}/v1/metadata/enums`;
+    const baseUrl = getHttpBaseUrl();
+    const url = `${baseUrl}/v1/metadata/enums`;
     try {
       const response = await fetch(url);
       const json = await response.json();
@@ -157,7 +152,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
-          event_type: 'APPROVAL_RESPONSE',
+          event_type: CLIENT_EVENTS.APPROVAL_RESPONSE,
           action,
           feedback,
           task_id: taskId,
@@ -181,7 +176,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
-          event_type: 'STOP',
+          event_type: CLIENT_EVENTS.STOP,
           task_id: taskId,
           correlation_id: correlationId,
         })

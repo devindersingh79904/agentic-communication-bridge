@@ -14,6 +14,7 @@ async def draft_tool(state: WorkflowState) -> None:
     await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)
     state.draft = await generate_outreach_draft(
         prompt=state.prompt,
-        analysis_summary=state.analysis_summary or ""
+        analysis_summary=state.analysis_summary or "",
+        selected_vendor=state.selected_vendor
     )
     logger.info("Draft tool execution completed")

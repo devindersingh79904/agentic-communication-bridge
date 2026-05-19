@@ -1,6 +1,7 @@
 import { useAgentStore } from '../store/agent-store';
 import { SERVER_EVENTS, CLIENT_EVENTS } from '../constants/websocket-events';
 import { ServerEvent, AgentStep } from '../types/websocket';
+import { WS_BASE_URL, WS_AGENT_ENDPOINT } from '../constants/config';
 
 let timerId: any = null;
 
@@ -16,18 +17,11 @@ export const connectAgentWS = (prompt: string) => {
   // Pre-initialize prompt in chat log and set optimistic SCHEDULED state
   store.connectWebSocket(prompt);
 
-  const cleanHost = store.hostUrl.replace(/^(ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)/, '');
-
-  // Resolve protocol automatically (WSS for HTTPS/SSL, WS for HTTP/Local)
-  let protocol = 'ws';
-  if (typeof window !== 'undefined' && window.location) {
-    protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  } else {
-    // Non-browser or native fallback
-    protocol = cleanHost.includes('localhost') || cleanHost.includes('127.0.0.1') ? 'ws' : 'wss';
+  let finalWsBaseUrl = WS_BASE_URL;
+  if (typeof window !== 'undefined' && window.location && window.location.protocol === 'https:') {
+    finalWsBaseUrl = WS_BASE_URL.replace(/^ws:\/\//, 'wss://');
   }
-
-  const wsUrl = `${protocol}://${cleanHost}/v1/agent/connect`;
+  const wsUrl = `${finalWsBaseUrl}${WS_AGENT_ENDPOINT}`;
 
   store.appendMessage({
     sender: 'system',
@@ -107,8 +101,7 @@ export const connectAgentWS = (prompt: string) => {
 
             store.appendMessage({
               sender: 'agent',
-              text: `${approvalData.message}\nDraft: "${approvalData.draft_message}"`,
-              // We can omit agent_step here or set it to null since it's not a real step
+              text: `Initial Draft:\n${approvalData.draft_message}`,
             });
             break;
 
@@ -124,7 +117,7 @@ export const connectAgentWS = (prompt: string) => {
             if (completedData.final_response) {
               store.appendMessage({
                 sender: 'agent',
-                text: completedData.final_response,
+                text: `Refined Draft:\n${completedData.final_response}`,
               });
             }
 

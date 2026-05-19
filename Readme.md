@@ -39,7 +39,20 @@ PORT=8000
 HOST=127.0.0.1
 
 # Human-in-the-loop approval gate timeout window in seconds
-APPROVAL_TIMEOUT_SECONDS=10
+APPROVAL_TIMEOUT_SECONDS=60
+
+# =========================
+# Localized Procurement Context
+# =========================
+DEFAULT_CITY=Bangalore
+DEFAULT_LOCALITY=Marathahalli
+DEFAULT_PINCODE=560037
+
+# =========================
+# User Identity Configuration
+# =========================
+DEFAULT_USER_NAME=Devinder Singh
+DEFAULT_COMPANY_NAME=DSP Technologies
 
 # =========================
 # OpenAI Configuration
@@ -53,6 +66,9 @@ OPENAI_MODEL=gpt-4.1-mini
 # Configurable temperature parameter for draft determinism
 OPENAI_TEMPERATURE=0.3
 
+# Temperature parameter for self-reflection refinement
+REFLECTION_TEMPERATURE=0.6
+
 # =========================
 # Agent Workflow Configuration
 # =========================
@@ -64,6 +80,14 @@ AGENT_STEP_DELAY_SECONDS=2
 # =========================
 # Bounded limit for iterative LLM regeneration attempts
 MAX_REGENERATION_ATTEMPTS=3
+```
+
+### Mobile Configuration
+
+Create a `.env` file in the `mobile/` directory:
+
+```bash
+EXPO_PUBLIC_WS_BASE_URL=ws://localhost:8000
 ```
 
 ---
