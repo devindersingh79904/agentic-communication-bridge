@@ -4,20 +4,21 @@ A premium, production-ready human-in-the-loop AI agentic system. It features a R
 
 ## How it Works
 
-The application operates as a real-time state machine where orchestration steps are isolated into lightweight, modular async tools (`app/tools/`):
+The application operates as a real-time state machine where orchestration steps are isolated into lightweight, modular async tools (`app/tools/`), sharing a centralized `WorkflowState` object inspired by graph-based orchestration:
 
-1. **Client Triggers Agent**: The client connects to the WebSocket endpoint `/v1/agent/connect`.
-2. **State Machine Execution**: The backend executes the workflow sequentially:
-   - `SEARCHING_VENDORS` -> Runs `research_tool` (Vendor Discovery)
-   - `ANALYZING_PRICING` -> Runs `analysis_tool` (Price/Offer Analysis)
-   - `DRAFTING_OUTREACH` -> Runs `draft_tool` (OpenAI generates the initial outreach message)
-   - `SELF_REFLECTION` -> Runs `reflection_tool` (OpenAI reviews and improves the generated draft)
-3. **Approval Gate (`WAITING_APPROVAL`)**: The backend pauses execution and waits for client consent. A configurable countdown timer runs (e.g., 10 seconds).
-4. **Execution & Final States**:
-   - If approved, it calls the `execution_tool` to finalize outreach and transitions to `SUCCESS`.
+1. **Client Connects**: The client opens a WebSocket to `/v1/agent/connect`. The task is registered in `SCHEDULED` state.
+2. **Client Sends `START_TASK`**: The client sends a `START_TASK` event with the user's prompt. The backend creates a `WorkflowState(prompt=...)` and begins orchestration (`SCHEDULED → RUNNING`).
+3. **State Machine Execution**: The backend executes the workflow sequentially:
+   - `SEARCHING_VENDORS` → Runs `research_tool` (Vendor Discovery)
+   - `ANALYZING_PRICING` → Runs `analysis_tool` (Price/Offer Analysis)
+   - `DRAFTING_OUTREACH` → Runs `draft_tool` (OpenAI generates outreach using the user's prompt)
+   - `SELF_REFLECTION` → Runs `reflection_tool` (OpenAI reviews and improves the draft)
+4. **Approval Gate (`WAITING_APPROVAL`)**: The backend pauses and waits for client consent with a configurable countdown timer.
+5. **Execution & Final States** (`WAITING_APPROVAL → EXECUTING → SUCCESS`):
+   - If approved, transitions to `EXECUTING`, calls `execution_tool`, then transitions to `SUCCESS`.
    - If the user clicks **Stop Run** or the timeout expires, it immediately cancels (`CANCELLED`).
 
-Each tool execution pauses for a globally configurable simulated delay time (`AGENT_STEP_DELAY_SECONDS`), allowing clean debugging and execution tracking.
+Each tool reads/writes shared `WorkflowState` fields and pauses for a globally configurable delay (`AGENT_STEP_DELAY_SECONDS`).
 
 ---
 
@@ -99,8 +100,22 @@ The client bundler will start and serve the application on `http://localhost:808
 ---
 
 ## Testing & Verification
-You can execute the automated test client to verify success, cancellation, timeouts, and LLM error bounds:
+You can execute the automated WebSocket integration test to verify the full orchestration flow (connect → `START_TASK` → steps → approval → `EXECUTING` → success):
 ```bash
 cd backend
 PYTHONPATH=. uv run python scratch/websocket_test.py
+```
+Expected output:
+```
+[1] Connected to WebSocket
+[2] Sent START_TASK
+  [STATUS_UPDATE] state=RUNNING step=SEARCHING_VENDORS ...
+  [STATUS_UPDATE] state=RUNNING step=ANALYZING_PRICING ...
+  [STATUS_UPDATE] state=RUNNING step=DRAFTING_OUTREACH ...
+  [STATUS_UPDATE] state=RUNNING step=SELF_REFLECTION ...
+  [APPROVAL_REQUIRED] state=WAITING_APPROVAL ...
+[3] Sent APPROVED
+  [TASK_COMPLETED] state=SUCCESS ...
+
+✅ SUCCESS - Full workflow completed!
 ```
