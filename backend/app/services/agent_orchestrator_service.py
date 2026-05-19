@@ -22,7 +22,10 @@ from app.tools.execution_tool import execution_tool
 
 logger = get_logger("services.agent_orchestrator")
 
-# In-memory registry to track active WebSocket orchestration sessions
+# In-memory registry tracking active WebSocket orchestration sessions.
+# Intentionally kept as runtime-only state — each task is scoped to a single
+# WebSocket lifecycle and cleaned up on completion, cancellation, or disconnect.
+# Databases/Redis are avoided: orchestration state is ephemeral and session-bound.
 active_tasks: Dict[str, Dict[str, Any]] = {}
 
 # Allowed state transitions for the workflow state machine
@@ -109,16 +112,26 @@ def approve_task(task_id: str) -> None:
     Idempotent — duplicate APPROVED events are safely ignored.
     """
     task_info = active_tasks.get(task_id)
-    if task_info:
-        state = task_info.get("task_state")
-        if state == TaskState.WAITING_APPROVAL:
-            if task_info["approval_event"].is_set():
-                logger.warning("Duplicate APPROVED event received (ignored)")
-                return
-            logger.info("Approval received")
-            task_info["approval_event"].set()
-        else:
-            logger.warning("Task received APPROVED event but is in state: %s", state)
+    if not task_info:
+        logger.warning("Approval received for unknown task %s (ignored)", task_id)
+        return
+
+    state = task_info.get("task_state")
+    if state != TaskState.WAITING_APPROVAL:
+        logger.warning("Task received APPROVED event but is in state: %s", state)
+        return
+
+    approval_event = task_info.get("approval_event")
+    if not approval_event:
+        logger.warning("Approval event missing for task %s (ignored)", task_id)
+        return
+
+    if approval_event.is_set():
+        logger.warning("Duplicate APPROVED event received (ignored)")
+        return
+
+    logger.info("Approval received")
+    approval_event.set()
 
 async def cancel_task(task_id: str) -> None:
     """
@@ -188,8 +201,9 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
     task_token = set_task_id(task_id)
     
     # Store workflow state in registry for runtime visibility
-    if task_id in active_tasks:
-        active_tasks[task_id]["workflow_state"] = state
+    task_entry = active_tasks.get(task_id)
+    if task_entry:
+        task_entry["workflow_state"] = state
     
     logger.info("Orchestration workflow started with prompt: %.100s", state.prompt)
     
@@ -280,8 +294,16 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
             logger.warning("Orchestration runner aborted: failed to transition task to WAITING_APPROVAL")
             return
-            
-        approval_event = active_tasks[task_id]["approval_event"]
+
+        task_info = active_tasks.get(task_id)
+        if not task_info:
+            logger.warning("Task %s removed during WAITING_APPROVAL transition (aborting)", task_id)
+            return
+
+        approval_event = task_info.get("approval_event")
+        if not approval_event:
+            logger.warning("Approval event missing for task %s (aborting)", task_id)
+            return
         app_req_event = ApprovalRequiredEvent(
             correlation_id=correlation_id,
             task_id=task_id,

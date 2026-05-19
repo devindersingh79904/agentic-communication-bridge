@@ -292,3 +292,25 @@ The workflow state is intentionally kept in-memory and scoped to a single WebSoc
 - Each task runs within one continuous WebSocket connection.
 - State is cleaned up immediately on completion, cancellation, or disconnect.
 - This keeps the implementation lightweight and assignment-focused.
+
+---
+
+## 10. Runtime In-Memory State
+
+### `active_tasks` Registry
+The `active_tasks` dictionary is the sole runtime coordination structure for all active WebSocket orchestration sessions. It maps each `task_id` to a metadata dict containing the websocket reference, asyncio task handle, approval event, task state, and workflow state.
+
+This is **not** a persistence layer. It is an ephemeral process-local registry that exists only while the server process is running:
+- Entries are created when a task is registered (`register_task`).
+- Entries are removed immediately upon completion, cancellation, or disconnect (`cleanup_task`).
+- No data survives a server restart — by design.
+
+### Shared `WorkflowState`
+The `WorkflowState` dataclass is the centralized mutable runtime context shared between the orchestrator, tools, and LLM services. It is graph-inspired: each tool writes to a specific field and downstream tools read from it, eliminating parameter chaining.
+
+### Why No Database / Redis / Queue?
+Repositories and external persistence are intentionally avoided because:
+- **Session-scoped**: Each orchestration run lives within a single WebSocket connection. There is no need to resume across connections.
+- **Short-lived**: Tasks complete in seconds, not hours. Checkpoint/restore adds complexity without value.
+- **Assignment-focused**: Keeping state in-memory reduces infrastructure dependencies and keeps the system self-contained.
+- **Common in practice**: Many real-time orchestration systems (including production agent runners) keep active runtime state in-memory and only persist completed results — if at all.

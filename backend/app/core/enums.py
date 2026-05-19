@@ -24,7 +24,6 @@ class WebSocketEventType(str, Enum):
     APPROVED = "APPROVED"
     STOP = "STOP"
     TASK_COMPLETED = "TASK_COMPLETED"
-    TASK_FAILED = "TASK_FAILED"
     TASK_CANCELLED = "TASK_CANCELLED"
     ERROR = "ERROR"
 

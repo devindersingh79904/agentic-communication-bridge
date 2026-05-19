@@ -68,9 +68,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.warning("Duplicate START_TASK event received (ignored)")
                     continue
                     
-                prompt = payload.get("prompt", "").strip()
+                raw_prompt = payload.get("prompt", "")
+                prompt = raw_prompt.strip()
                 if not prompt:
-                    logger.warning("START_TASK received with empty prompt (rejected)")
+                    logger.warning(
+                        "START_TASK received with empty or whitespace-only prompt (rejected)"
+                    )
                     continue
                 
                 logger.info("START_TASK received, initializing workflow state")

@@ -6,8 +6,17 @@ from typing import Optional
 class WorkflowState:
     """
     Lightweight shared workflow state container inspired by graph-based
-    orchestration systems. Acts as the centralized mutable runtime context
-    shared between the orchestrator, tools, and LLM integration layers.
+    orchestration systems (e.g., LangGraph's shared state nodes).
+
+    Acts as the centralized mutable runtime context shared between the
+    orchestrator, tools, and LLM integration layers. Each field is
+    written by exactly one tool and read downstream, eliminating
+    explicit parameter chaining across the orchestration pipeline.
+
+    This state is intentionally ephemeral — scoped to a single WebSocket
+    session lifecycle. No persistence layer is used because orchestration
+    runs are short-lived, single-connection flows that are cleaned up
+    immediately on completion, cancellation, or disconnect.
     """
     prompt: str
 

@@ -66,10 +66,10 @@ class StopEvent(BaseWebSocketEvent):
     """
     event_type: WebSocketEventType = WebSocketEventType.STOP
 
-class StartTaskEvent(BaseModel):
+class StartTaskEvent(BaseWebSocketEvent):
     """
     Event received from client to start orchestration with a user prompt.
     """
-    event_type: WebSocketEventType
+    event_type: WebSocketEventType = WebSocketEventType.START_TASK
     prompt: str
 
