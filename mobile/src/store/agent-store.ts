@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { ConnectionStatus, TaskState, AgentStep, Message, ApprovalAction } from '../types/websocket';
-import { getCleanHost, getHttpBaseUrl } from '../constants/config';
+import { getCleanHost, HTTP_BASE_URL } from '../constants/config';
 import { CLIENT_EVENTS } from '../constants/websocket-events';
 
 interface AgentState {
@@ -94,7 +94,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setIds: (taskId, correlationId) => set({ taskId, correlationId }),
 
   fetchMetadataEnums: async () => {
-    const baseUrl = getHttpBaseUrl();
+    const baseUrl = HTTP_BASE_URL;
     const url = `${baseUrl}/v1/metadata/enums`;
     try {
       const response = await fetch(url);

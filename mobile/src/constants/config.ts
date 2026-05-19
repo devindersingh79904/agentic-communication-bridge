@@ -10,3 +10,5 @@ export const getHttpBaseUrl = () => {
   const protocol = WS_BASE_URL.startsWith('wss://') ? 'https' : 'http';
   return `${protocol}://${cleanHost}`;
 };
+
+export const HTTP_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || getHttpBaseUrl();
