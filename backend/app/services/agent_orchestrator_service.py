@@ -30,14 +30,18 @@ VALID_TRANSITIONS = {
     TaskState.SCHEDULED: {TaskState.RUNNING, TaskState.CANCELLED},
     TaskState.RUNNING: {
         TaskState.WAITING_APPROVAL,
-        TaskState.SUCCESS,
         TaskState.FAILED,
         TaskState.CANCELLED
     },
     TaskState.WAITING_APPROVAL: {
-        TaskState.SUCCESS,
+        TaskState.EXECUTING,
         TaskState.CANCELLED,
         TaskState.FAILED
+    },
+    TaskState.EXECUTING: {
+        TaskState.SUCCESS,
+        TaskState.FAILED,
+        TaskState.CANCELLED
     },
     TaskState.SUCCESS: set(),
     TaskState.FAILED: set(),
@@ -102,11 +106,15 @@ def set_task_reference(task_id: str, task: asyncio.Task) -> None:
 def approve_task(task_id: str) -> None:
     """
     Approves the task and triggers the approval event to resume the workflow.
+    Idempotent — duplicate APPROVED events are safely ignored.
     """
     task_info = active_tasks.get(task_id)
     if task_info:
         state = task_info.get("task_state")
         if state == TaskState.WAITING_APPROVAL:
+            if task_info["approval_event"].is_set():
+                logger.warning("Duplicate APPROVED event received (ignored)")
+                return
             logger.info("Approval received")
             task_info["approval_event"].set()
         else:
@@ -306,14 +314,20 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             return
             
         # If task was cancelled while waiting, we exit
-        if active_tasks[task_id].get("cancelled"):
+        task_info = active_tasks.get(task_id)
+        if not task_info or task_info.get("cancelled"):
             return
             
-        # Step 6: SUCCESS
+        # Step 6: EXECUTING
         logger.info("Orchestration resumed after approval")
-        if transition_task_state(task_id, TaskState.SUCCESS):
-            await execution_tool(state)
+        if not transition_task_state(task_id, TaskState.EXECUTING):
+            logger.warning("Aborting: failed to transition to EXECUTING")
+            return
             
+        await execution_tool(state)
+        
+        # Step 7: SUCCESS
+        if transition_task_state(task_id, TaskState.SUCCESS):
             completed_event = TaskCompletedEvent(
                 correlation_id=correlation_id,
                 task_id=task_id,

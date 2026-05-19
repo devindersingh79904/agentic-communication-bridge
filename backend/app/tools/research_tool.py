@@ -9,9 +9,10 @@ async def research_tool(state: WorkflowState) -> None:
     """
     Simulates vendor research tool. Writes results to state.research_data.
     """
-    logger.info("Research tool execution started")
+    logger.info("Research tool execution started for prompt: %.100s", state.prompt)
     await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)
     state.research_data = {
+        "prompt": state.prompt,
         "vendors": [
             "Vendor A",
             "Vendor B"

@@ -70,6 +70,6 @@ class StartTaskEvent(BaseModel):
     """
     Event received from client to start orchestration with a user prompt.
     """
-    event_type: str
+    event_type: WebSocketEventType
     prompt: str
 
