@@ -4,6 +4,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
 from app.core.enums import WebSocketEventType
+from app.models.workflow_state import WorkflowState
 from app.services.agent_orchestrator_service import (
     register_task,
     set_task_reference,
@@ -20,6 +21,7 @@ logger = get_logger("websocket.agent")
 async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket connection endpoint for agent interaction.
+    Orchestration starts only after a START_TASK event is received with a valid prompt.
     """
     await websocket.accept()
     
@@ -42,15 +44,11 @@ async def websocket_endpoint(websocket: WebSocket):
     
     logger.info("WebSocket connection established")
     
-    # Create the approval event and register task
+    # Create the approval event and register task in SCHEDULED state
     approval_event = asyncio.Event()
     register_task(task_id, websocket, approval_event)
     
-    # Spawn background orchestration task independently of websocket receive loop
-    orchestration_task = asyncio.create_task(
-        run_orchestration(websocket, correlation_id, task_id)
-    )
-    set_task_reference(task_id, orchestration_task)
+    orchestration_started = False
     
     try:
         while True:
@@ -64,7 +62,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
                 
             event_type = payload.get("event_type")
-            if event_type == WebSocketEventType.APPROVED:
+            
+            if event_type == WebSocketEventType.START_TASK:
+                if orchestration_started:
+                    logger.warning("Duplicate START_TASK event received (ignored)")
+                    continue
+                    
+                prompt = payload.get("prompt", "").strip()
+                if not prompt:
+                    logger.warning("START_TASK received with empty prompt (rejected)")
+                    continue
+                
+                logger.info("START_TASK received, initializing workflow state")
+                state = WorkflowState(prompt=prompt)
+                
+                # Spawn background orchestration task with workflow state
+                orchestration_task = asyncio.create_task(
+                    run_orchestration(websocket, correlation_id, task_id, state)
+                )
+                set_task_reference(task_id, orchestration_task)
+                orchestration_started = True
+                
+            elif event_type == WebSocketEventType.APPROVED:
                 approve_task(task_id)
             elif event_type == WebSocketEventType.STOP:
                 await cancel_task(task_id)

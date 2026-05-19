@@ -10,16 +10,27 @@ client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 # Maximum allowed output length for defensive truncation
 MAX_OUTPUT_LENGTH = 2000
 
-async def generate_outreach_draft() -> str:
+async def generate_outreach_draft(prompt: str, analysis_summary: str) -> str:
     """
-    Generates a professional and concise vendor outreach message requesting a pricing discussion.
+    Generates a professional and concise vendor outreach message using the user's
+    task prompt and analysis summary for context.
     """
     logger.info("Draft generation started")
     response = await client.chat.completions.create(
         model=config.OPENAI_MODEL,
         messages=[
-            {"role": "system", "content": "You are a professional procurement assistant. Generate extremely concise vendor outreach messages."},
-            {"role": "user", "content": "Generate a concise professional outreach message requesting vendor pricing discussion."}
+            {
+                "role": "system",
+                "content": "You are a professional procurement assistant. Generate extremely concise vendor outreach messages."
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Task: {prompt}\n\n"
+                    f"Analysis: {analysis_summary}\n\n"
+                    f"Generate a concise professional outreach message for the above task."
+                )
+            }
         ],
         temperature=config.OPENAI_TEMPERATURE,
         max_tokens=150
@@ -37,16 +48,26 @@ async def generate_outreach_draft() -> str:
     logger.info("Draft generation completed")
     return draft
 
-async def self_reflect_draft(draft: str) -> str:
+async def self_reflect_draft(draft: str, prompt: str) -> str:
     """
-    Reviews and improves an outreach message for professionalism, tone, and clarity while keeping it concise.
+    Reviews and improves an outreach message for professionalism, tone, and clarity
+    while keeping it concise and aligned with the original task prompt.
     """
     logger.info("Self-reflection started")
     response = await client.chat.completions.create(
         model=config.OPENAI_MODEL,
         messages=[
-            {"role": "system", "content": "You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."},
-            {"role": "user", "content": f"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"}
+            {
+                "role": "system",
+                "content": "You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Original task: {prompt}\n\n"
+                    f"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"
+                )
+            }
         ],
         temperature=config.OPENAI_TEMPERATURE,
         max_tokens=150

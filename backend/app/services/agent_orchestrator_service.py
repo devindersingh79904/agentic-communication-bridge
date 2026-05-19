@@ -6,6 +6,7 @@ from starlette.websockets import WebSocketState
 from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
 from app.core.enums import TaskState, AgentStep
 from app.core import config
+from app.models.workflow_state import WorkflowState
 from app.schemas.websocket_schema import (
     StatusUpdateEvent,
     ApprovalRequiredEvent,
@@ -72,14 +73,13 @@ def is_websocket_active(websocket: WebSocket) -> bool:
     """
     for task_info in active_tasks.values():
         if task_info.get("websocket") == websocket:
-            # Check if task is in a non-terminal state
             if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
                 return True
     return False
 
 def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Event) -> None:
     """
-    Registers a new active WebSocket task session in the registry.
+    Registers a new active WebSocket task session in the registry in SCHEDULED state.
     """
     active_tasks[task_id] = {
         "websocket": websocket,
@@ -87,7 +87,8 @@ def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Ev
         "approval_event": approval_event,
         "task_state": TaskState.SCHEDULED,
         "cancelled": False,
-        "terminal_emitted": False
+        "terminal_emitted": False,
+        "workflow_state": None
     }
     logger.info("Orchestration task registered in registry")
 
@@ -119,7 +120,6 @@ async def cancel_task(task_id: str) -> None:
     if not task_info:
         return
         
-    # Attempt to transition task state to CANCELLED
     if not transition_task_state(task_id, TaskState.CANCELLED):
         logger.debug("Task state transition to CANCELLED failed or already terminal")
         return
@@ -170,23 +170,29 @@ async def send_terminal_event(websocket: WebSocket, task_id: str, event: Any) ->
     task_info["terminal_emitted"] = True
     await safe_send_json(websocket, event.model_dump())
 
-async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: str) -> None:
+async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: str, state: WorkflowState) -> None:
     """
-    Simulates the async agent orchestration workflow lifecycle using lightweight tools with transition validation.
+    Executes the async agent orchestration workflow using shared WorkflowState.
+    Transitions from SCHEDULED -> RUNNING before the first tool executes.
     """
     # Propagate correlation_id and task_id inside the background task context
     corr_token = set_correlation_id(correlation_id)
     task_token = set_task_id(task_id)
     
-    logger.info("Orchestration workflow started")
+    # Store workflow state in registry for runtime visibility
+    if task_id in active_tasks:
+        active_tasks[task_id]["workflow_state"] = state
+    
+    logger.info("Orchestration workflow started with prompt: %.100s", state.prompt)
     
     try:
-        # Step 1: SEARCHING_VENDORS
-        logger.info("Entering step: SEARCHING_VENDORS")
+        # Transition SCHEDULED -> RUNNING before first tool
         if not transition_task_state(task_id, TaskState.RUNNING):
             logger.warning("Aborting orchestration run: failed to transition task state to RUNNING")
             return
-            
+
+        # Step 1: SEARCHING_VENDORS
+        logger.info("Entering step: SEARCHING_VENDORS")
         event = StatusUpdateEvent(
             correlation_id=correlation_id,
             task_id=task_id,
@@ -195,7 +201,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             message="Searching for vendors..."
         )
         await safe_send_json(websocket, event.model_dump())
-        research_data = await research_tool()
+        await research_tool(state)
         
         # Step 2: ANALYZING_PRICING
         logger.info("Entering step: ANALYZING_PRICING")
@@ -207,7 +213,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             message="Analyzing pricing..."
         )
         await safe_send_json(websocket, event.model_dump())
-        summary = await analysis_tool(research_data)
+        await analysis_tool(state)
         
         # Step 3: DRAFTING_OUTREACH
         logger.info("Entering step: DRAFTING_OUTREACH")
@@ -221,7 +227,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         await safe_send_json(websocket, event.model_dump())
         
         try:
-            draft = await draft_tool(summary)
+            await draft_tool(state)
         except Exception as e:
             logger.error("Draft generation failed: %s", str(e))
             if transition_task_state(task_id, TaskState.FAILED):
@@ -247,7 +253,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         await safe_send_json(websocket, event.model_dump())
         
         try:
-            improved_draft = await reflection_tool(draft)
+            await reflection_tool(state)
         except Exception as e:
             logger.error("Self-reflection failed: %s", str(e))
             if transition_task_state(task_id, TaskState.FAILED):
@@ -272,7 +278,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             correlation_id=correlation_id,
             task_id=task_id,
             task_state=TaskState.WAITING_APPROVAL,
-            draft_message=improved_draft,
+            draft_message=state.improved_draft or state.draft or "",
             message="Draft generated. Awaiting user approval.",
             approval_timeout_seconds=config.APPROVAL_TIMEOUT_SECONDS
         )
@@ -289,7 +295,6 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 if task_info:
                     task_info["cancelled"] = True
                 
-                # Send TaskCancelledEvent
                 cancelled_event = TaskCancelledEvent(
                     correlation_id=correlation_id,
                     task_id=task_id,
@@ -307,23 +312,20 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         # Step 6: SUCCESS
         logger.info("Orchestration resumed after approval")
         if transition_task_state(task_id, TaskState.SUCCESS):
-            # Execute the execution tool
-            execution_result = await execution_tool()
+            await execution_tool(state)
             
             completed_event = TaskCompletedEvent(
                 correlation_id=correlation_id,
                 task_id=task_id,
                 task_state=TaskState.SUCCESS,
-                message=f"Task successfully executed. Outreach finalized. Result: {execution_result}"
+                message=f"Task successfully executed. Outreach finalized. Result: {state.execution_result}"
             )
             await send_terminal_event(websocket, task_id, completed_event)
             logger.info("Orchestration completed successfully")
         
     except asyncio.CancelledError:
         logger.info("Orchestration cancelled exception caught")
-        # Ensure state transitioned to CANCELLED
         transition_task_state(task_id, TaskState.CANCELLED)
-        # Send TaskCancelledEvent
         cancelled_event = TaskCancelledEvent(
             correlation_id=correlation_id,
             task_id=task_id,

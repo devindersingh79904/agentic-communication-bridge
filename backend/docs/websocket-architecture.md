@@ -262,3 +262,33 @@ Inbound WebSocket payloads are validated for:
 Both `generate_outreach_draft()` and `self_reflect_draft()` validate their outputs before returning:
 - **Empty/whitespace-only** outputs raise a `ValueError`, which the orchestrator catches and surfaces as an `ErrorEvent` with code `LLM_GENERATION_FAILED`.
 - **Defensive truncation** caps output at 2000 characters to guard against unexpectedly long responses.
+
+---
+
+## 9. Shared Workflow State Architecture
+
+### Design
+Inspired by graph-based orchestration systems, the backend uses a lightweight `WorkflowState` dataclass (`app/models/workflow_state.py`) as the centralized mutable runtime context shared between the orchestrator, tools, and LLM integration layers. This replaces explicit parameter chaining between tool functions.
+
+### Fields
+| Field | Type | Written By |
+|---|---|---|
+| `prompt` | `str` | Client (`START_TASK` event) |
+| `research_data` | `dict` | `research_tool` |
+| `analysis_summary` | `str` | `analysis_tool` |
+| `draft` | `str` | `draft_tool` (via LLM) |
+| `improved_draft` | `str` | `reflection_tool` (via LLM) |
+| `execution_result` | `str` | `execution_tool` |
+
+### Prompt-Driven Orchestration
+Orchestration does **not** start on WebSocket connect. The flow is:
+1. Client connects → task registered in `SCHEDULED` state.
+2. Client sends `START_TASK` with `prompt` → `WorkflowState(prompt=...)` created.
+3. Background orchestration task spawned → transitions `SCHEDULED → RUNNING`.
+4. The user's prompt propagates through all LLM calls, making generated drafts contextually relevant.
+
+### Why No Persistence Layer?
+The workflow state is intentionally kept in-memory and scoped to a single WebSocket session lifecycle. No database, Redis, or checkpoint system is used because:
+- Each task runs within one continuous WebSocket connection.
+- State is cleaned up immediately on completion, cancellation, or disconnect.
+- This keeps the implementation lightweight and assignment-focused.
