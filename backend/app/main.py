@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from app.core.logger import setup_logging, get_logger
 from app.core.middleware import CorrelationIdMiddleware
+from app.schemas.base_response import BaseSuccessResponse
+from app.utils.response_builder import success_response
 
 # Initialize centralized logging before starting the app
 setup_logging()
@@ -15,10 +17,16 @@ app = FastAPI(
 app.add_middleware(CorrelationIdMiddleware)
 
 
-@app.get("/")
+@app.get("/", response_model=BaseSuccessResponse)
 async def health_check():
     logger.info("Health check endpoint called")
-    return {
-        "status": "healthy",
-        "service": "trybo-agentic-bridge-backend"
-    }
+    
+    response = success_response(
+        message="Health check successful",
+        data={
+            "service": "trybo-agentic-bridge-backend"
+        }
+    )
+    
+    logger.info("Health check served successfully")
+    return response

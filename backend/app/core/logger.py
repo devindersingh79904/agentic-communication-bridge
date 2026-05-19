@@ -44,7 +44,7 @@ class AsyncContextFormatter(logging.Formatter):
             _, method, full_path, _, status_code = record.args
             original_msg = f"{method} {full_path} {status_code}"
         else:
-            original_msg = super().formatMessage(record)
+            original_msg = record.getMessage()
         
         # Build the final log string
         # Expected: [2026-05-19 18:42:11.234] [INFO] [abc123] [task-123] [agent_service] Starting workflow

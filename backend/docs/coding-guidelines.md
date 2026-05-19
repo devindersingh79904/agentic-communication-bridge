@@ -147,3 +147,18 @@ Strictly enforce boundaries between architectural layers:
    - Keep files clean and minimal.
    - Avoid "import dumping".
    - Keep dependencies intentional and traceable.
+
+## 15. API Response Standards
+
+1. **Centralized Response Schema**
+   - All REST APIs must use the centralized response builders (`success_response` and `error_response`).
+   - Controllers must **never** manually construct raw JSON responses.
+
+2. **Mandatory Response Fields**
+   - Every response must include: `success`, `message`, `correlation_id`, and `timestamp` (timezone-aware UTC).
+   - Success responses must contain a `data` field (which can be `None`).
+   - Error responses must contain an `error_code` field.
+
+3. **Validation Errors**
+   - Validation errors must use the structured `errors` array in the `BaseErrorResponse` schema.
+   - HTTP status codes handle protocol semantics (e.g., 400), while the structured payload provides rich application semantics.

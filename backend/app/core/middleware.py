@@ -24,17 +24,20 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         token = set_correlation_id(correlation_id)
         
         try:
-            # Log request start (optional, can be noisy in high-traffic APIs)
-            # logger.info(f"Incoming Request: {request.method} {request.url.path}")
+            logger.info(f"Incoming Request -> {request.method} {request.url.path}")
             
             response = await call_next(request)
+            
+            logger.info(f"Outgoing Response -> {request.method} {request.url.path} {response.status_code}")
             
             # Attach correlation ID to response headers
             response.headers[self.CORRELATION_ID_HEADER] = correlation_id
             return response
             
-        except Exception as e:
-            logger.exception(f"Unhandled exception during request processing: {str(e)}")
+        except Exception:
+            logger.exception(
+                f"Unhandled exception during request processing -> {request.method} {request.url.path}"
+            )
             raise
         finally:
             correlation_id_ctx.reset(token)
