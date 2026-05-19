@@ -1,3 +1,4 @@
+from typing import Optional
 from openai import AsyncOpenAI
 from app.core import config
 from app.core.logger import get_logger
@@ -48,12 +49,26 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str) -> str:
     logger.info("Draft generation completed")
     return draft
 
-async def self_reflect_draft(draft: str, prompt: str) -> str:
+async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Optional[str] = None) -> str:
     """
     Reviews and improves an outreach message for professionalism, tone, and clarity
     while keeping it concise and aligned with the original task prompt.
     """
     logger.info("Self-reflection started")
+    
+    user_content = (
+        f"Original task: {prompt}\n\n"
+        f"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"
+    )
+    
+    if rejection_feedback:
+        user_content = (
+            f"Original task: {prompt}\n\n"
+            f"User rejected the previous draft with the following feedback:\n"
+            f"'{rejection_feedback}'\n\n"
+            f"Regenerate a better outreach draft aligned with this feedback, while keeping it concise and professional:\n\n{draft}"
+        )
+        
     response = await client.chat.completions.create(
         model=config.OPENAI_MODEL,
         messages=[
@@ -63,10 +78,7 @@ async def self_reflect_draft(draft: str, prompt: str) -> str:
             },
             {
                 "role": "user",
-                "content": (
-                    f"Original task: {prompt}\n\n"
-                    f"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"
-                )
+                "content": user_content
             }
         ],
         temperature=config.OPENAI_TEMPERATURE,

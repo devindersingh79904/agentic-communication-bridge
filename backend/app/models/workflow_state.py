@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional
-
+from app.core.enums import ApprovalAction
 
 @dataclass
 class WorkflowState:
@@ -27,3 +27,7 @@ class WorkflowState:
     improved_draft: Optional[str] = None
 
     execution_result: Optional[str] = None
+
+    regeneration_count: int = 0
+    rejection_feedback: Optional[str] = None
+    approval_action: Optional[ApprovalAction] = None

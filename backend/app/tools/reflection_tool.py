@@ -14,6 +14,7 @@ async def reflection_tool(state: WorkflowState) -> None:
     await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)
     state.improved_draft = await self_reflect_draft(
         draft=state.draft or "",
-        prompt=state.prompt
+        prompt=state.prompt,
+        rejection_feedback=state.rejection_feedback
     )
     logger.info("Reflection tool execution completed")

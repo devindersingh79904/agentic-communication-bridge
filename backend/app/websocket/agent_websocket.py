@@ -3,12 +3,12 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
-from app.core.enums import WebSocketEventType
+from app.core.enums import WebSocketEventType, ApprovalAction
 from app.models.workflow_state import WorkflowState
 from app.services.agent_orchestrator_service import (
     register_task,
     set_task_reference,
-    approve_task,
+    handle_approval_response,
     cancel_task,
     run_orchestration,
     is_websocket_active
@@ -86,8 +86,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 set_task_reference(task_id, orchestration_task)
                 orchestration_started = True
                 
-            elif event_type == WebSocketEventType.APPROVED:
-                approve_task(task_id)
+            elif event_type == WebSocketEventType.APPROVAL_RESPONSE:
+                action_str = payload.get("action")
+                try:
+                    action = ApprovalAction(action_str)
+                    handle_approval_response(task_id, action, payload.get("feedback"))
+                except ValueError:
+                    logger.warning("Invalid approval action received: %s", action_str)
             elif event_type == WebSocketEventType.STOP:
                 await cancel_task(task_id)
             else:

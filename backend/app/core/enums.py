@@ -21,7 +21,7 @@ class WebSocketEventType(str, Enum):
     STATUS_UPDATE = "STATUS_UPDATE"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     START_TASK = "START_TASK"
-    APPROVED = "APPROVED"
+    APPROVAL_RESPONSE = "APPROVAL_RESPONSE"
     STOP = "STOP"
     TASK_COMPLETED = "TASK_COMPLETED"
     TASK_CANCELLED = "TASK_CANCELLED"
@@ -33,7 +33,7 @@ class ApprovalAction(str, Enum):
     Determines if an agent workflow proceeds or is immediately halted.
     """
     APPROVE = "APPROVE"
-    STOP = "STOP"
+    REJECT = "REJECT"
 
 class AgentStep(str, Enum):
     """

@@ -1,10 +1,10 @@
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
 from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
-from app.core.enums import TaskState, AgentStep
+from app.core.enums import TaskState, AgentStep, ApprovalAction
 from app.core import config
 from app.models.workflow_state import WorkflowState
 from app.schemas.websocket_schema import (
@@ -106,10 +106,10 @@ def set_task_reference(task_id: str, task: asyncio.Task) -> None:
     if task_id in active_tasks:
         active_tasks[task_id]["task"] = task
 
-def approve_task(task_id: str) -> None:
+def handle_approval_response(task_id: str, action: ApprovalAction, feedback: Optional[str] = None) -> None:
     """
-    Approves the task and triggers the approval event to resume the workflow.
-    Idempotent — duplicate APPROVED events are safely ignored.
+    Handles human-in-the-loop approval actions (APPROVE/REJECT).
+    Idempotent — duplicate events are safely ignored.
     """
     task_info = active_tasks.get(task_id)
     if not task_info:
@@ -118,7 +118,7 @@ def approve_task(task_id: str) -> None:
 
     state = task_info.get("task_state")
     if state != TaskState.WAITING_APPROVAL:
-        logger.warning("Task received APPROVED event but is in state: %s", state)
+        logger.warning("Task received approval response but is in state: %s", state)
         return
 
     approval_event = task_info.get("approval_event")
@@ -127,10 +127,15 @@ def approve_task(task_id: str) -> None:
         return
 
     if approval_event.is_set():
-        logger.warning("Duplicate APPROVED event received (ignored)")
+        logger.warning("Duplicate approval event received (ignored)")
         return
 
-    logger.info("Approval received")
+    workflow_state = task_info.get("workflow_state")
+    if workflow_state:
+        workflow_state.approval_action = action
+        workflow_state.rejection_feedback = feedback
+
+    logger.info("Approval response received: %s", action)
     approval_event.set()
 
 async def cancel_task(task_id: str) -> None:
@@ -237,108 +242,136 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         await safe_send_json(websocket, event.model_dump())
         await analysis_tool(state)
         
-        # Step 3: DRAFTING_OUTREACH
-        logger.info("Entering step: DRAFTING_OUTREACH")
-        event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.RUNNING,
-            agent_step=AgentStep.DRAFTING_OUTREACH,
-            message="Drafting outreach..."
-        )
-        await safe_send_json(websocket, event.model_dump())
-        
-        try:
-            await draft_tool(state)
-        except Exception as e:
-            logger.error("Draft generation failed: %s", str(e))
-            if transition_task_state(task_id, TaskState.FAILED):
-                error_event = ErrorEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.FAILED,
-                    error_code="LLM_GENERATION_FAILED",
-                    message=f"Draft generation failed: {str(e)}"
-                )
-                await send_terminal_event(websocket, task_id, error_event)
-            return
+        while state.regeneration_count <= config.MAX_REGENERATION_ATTEMPTS:
+            # Step 3: DRAFTING_OUTREACH
+            logger.info("Entering step: DRAFTING_OUTREACH")
+            event = StatusUpdateEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.RUNNING,
+                agent_step=AgentStep.DRAFTING_OUTREACH,
+                message="Drafting outreach..."
+            )
+            await safe_send_json(websocket, event.model_dump())
             
-        # Step 4: SELF_REFLECTION
-        logger.info("Entering step: SELF_REFLECTION")
-        event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.RUNNING,
-            agent_step=AgentStep.SELF_REFLECTION,
-            message="Performing self-reflection..."
-        )
-        await safe_send_json(websocket, event.model_dump())
-        
-        try:
-            await reflection_tool(state)
-        except Exception as e:
-            logger.error("Self-reflection failed: %s", str(e))
-            if transition_task_state(task_id, TaskState.FAILED):
-                error_event = ErrorEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.FAILED,
-                    error_code="LLM_GENERATION_FAILED",
-                    message=f"Self-reflection failed: {str(e)}"
-                )
-                await send_terminal_event(websocket, task_id, error_event)
-            return
-            
-        # Step 5: WAITING_APPROVAL
-        logger.info("Orchestration paused, waiting for user approval")
-        if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
-            logger.warning("Orchestration runner aborted: failed to transition task to WAITING_APPROVAL")
-            return
-
-        task_info = active_tasks.get(task_id)
-        if not task_info:
-            logger.warning("Task %s removed during WAITING_APPROVAL transition (aborting)", task_id)
-            return
-
-        approval_event = task_info.get("approval_event")
-        if not approval_event:
-            logger.warning("Approval event missing for task %s (aborting)", task_id)
-            return
-        app_req_event = ApprovalRequiredEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.WAITING_APPROVAL,
-            draft_message=state.improved_draft or state.draft or "",
-            message="Draft generated. Awaiting user approval.",
-            approval_timeout_seconds=config.APPROVAL_TIMEOUT_SECONDS
-        )
-        await safe_send_json(websocket, app_req_event.model_dump())
-        
-        # Pause workflow using asyncio.Event with a timeout
-        logger.info("Approval timeout started (%s seconds)", config.APPROVAL_TIMEOUT_SECONDS)
-        try:
-            await asyncio.wait_for(approval_event.wait(), timeout=config.APPROVAL_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            logger.warning("Approval timeout exceeded. Task cancelled automatically.")
-            if transition_task_state(task_id, TaskState.CANCELLED):
-                task_info = active_tasks.get(task_id)
-                if task_info:
-                    task_info["cancelled"] = True
+            try:
+                await draft_tool(state)
+            except Exception as e:
+                logger.error("Draft generation failed: %s", str(e))
+                if transition_task_state(task_id, TaskState.FAILED):
+                    error_event = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.FAILED,
+                        error_code="LLM_GENERATION_FAILED",
+                        message=f"Draft generation failed: {str(e)}"
+                    )
+                    await send_terminal_event(websocket, task_id, error_event)
+                return
                 
-                cancelled_event = TaskCancelledEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.CANCELLED,
-                    message="Approval timeout exceeded. Task cancelled automatically."
-                )
-                await send_terminal_event(websocket, task_id, cancelled_event)
-                logger.info("Orchestration auto-cancelled due to timeout")
-            return
+            # Step 4: SELF_REFLECTION
+            logger.info("Entering step: SELF_REFLECTION")
+            event = StatusUpdateEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.RUNNING,
+                agent_step=AgentStep.SELF_REFLECTION,
+                message="Performing self-reflection..."
+            )
+            await safe_send_json(websocket, event.model_dump())
             
-        # If task was cancelled while waiting, we exit
-        task_info = active_tasks.get(task_id)
-        if not task_info or task_info.get("cancelled"):
-            return
+            try:
+                await reflection_tool(state)
+            except Exception as e:
+                logger.error("Self-reflection failed: %s", str(e))
+                if transition_task_state(task_id, TaskState.FAILED):
+                    error_event = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.FAILED,
+                        error_code="LLM_GENERATION_FAILED",
+                        message=f"Self-reflection failed: {str(e)}"
+                    )
+                    await send_terminal_event(websocket, task_id, error_event)
+                return
+                
+            # Step 5: WAITING_APPROVAL
+            logger.info("Orchestration paused, waiting for user approval")
+            if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
+                logger.warning("Orchestration runner aborted: failed to transition task to WAITING_APPROVAL")
+                return
+
+            task_info = active_tasks.get(task_id)
+            if not task_info:
+                logger.warning("Task %s removed during WAITING_APPROVAL transition (aborting)", task_id)
+                return
+
+            approval_event = task_info.get("approval_event")
+            if not approval_event:
+                logger.warning("Approval event missing for task %s (aborting)", task_id)
+                return
+            app_req_event = ApprovalRequiredEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.WAITING_APPROVAL,
+                draft_message=state.improved_draft or state.draft or "",
+                message="Draft generated. Awaiting user approval.",
+                approval_timeout_seconds=config.APPROVAL_TIMEOUT_SECONDS
+            )
+            await safe_send_json(websocket, app_req_event.model_dump())
+            
+            # Pause workflow using asyncio.Event with a timeout
+            logger.info("Approval timeout started (%s seconds)", config.APPROVAL_TIMEOUT_SECONDS)
+            try:
+                await asyncio.wait_for(approval_event.wait(), timeout=config.APPROVAL_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("Approval timeout exceeded. Task cancelled automatically.")
+                if transition_task_state(task_id, TaskState.CANCELLED):
+                    task_info = active_tasks.get(task_id)
+                    if task_info:
+                        task_info["cancelled"] = True
+                    
+                    cancelled_event = TaskCancelledEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.CANCELLED,
+                        message="Approval timeout exceeded. Task cancelled automatically."
+                    )
+                    await send_terminal_event(websocket, task_id, cancelled_event)
+                    logger.info("Orchestration auto-cancelled due to timeout")
+                return
+                
+            # If task was cancelled while waiting, we exit
+            task_info = active_tasks.get(task_id)
+            if not task_info or task_info.get("cancelled"):
+                return
+                
+            if state.approval_action == ApprovalAction.REJECT:
+                logger.info("Approval rejected with feedback. Regenerating...")
+                state.regeneration_count += 1
+                
+                if state.regeneration_count > config.MAX_REGENERATION_ATTEMPTS:
+                    logger.warning("Max regeneration attempts exceeded for task %s", task_id)
+                    if transition_task_state(task_id, TaskState.FAILED):
+                        error_event = ErrorEvent(
+                            correlation_id=correlation_id,
+                            task_id=task_id,
+                            task_state=TaskState.FAILED,
+                            error_code="MAX_REGENERATION_EXCEEDED",
+                            message="Maximum regeneration attempts exceeded. Task failed."
+                        )
+                        await send_terminal_event(websocket, task_id, error_event)
+                    return
+                
+                # Transition back to RUNNING for regeneration
+                if not transition_task_state(task_id, TaskState.RUNNING):
+                    return
+                    
+                approval_event.clear()
+                state.approval_action = None
+            else:
+                # APPROVE
+                break
             
         # Step 6: EXECUTING
         logger.info("Orchestration resumed after approval")

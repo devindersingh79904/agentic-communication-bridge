@@ -46,7 +46,11 @@ stateDiagram-v2
         DRAFTING_OUTREACH --> SELF_REFLECTION
     }
     RUNNING --> WAITING_APPROVAL : pause at gate
-    WAITING_APPROVAL --> SUCCESS : APPROVED received
+    WAITING_APPROVAL --> EXECUTING : APPROVE received
+    WAITING_APPROVAL --> RUNNING : REJECT received (regenerate)
+    WAITING_APPROVAL --> CANCELLED : STOP received / timeout
+    EXECUTING --> SUCCESS : completed
+    EXECUTING --> FAILED : unexpected error
     WAITING_APPROVAL --> CANCELLED : STOP received / timeout
     RUNNING --> CANCELLED : STOP received
     RUNNING --> FAILED : unexpected error
@@ -76,9 +80,13 @@ sequenceDiagram
         Note over Server, Client: Human-in-the-loop Interaction (WAITING_APPROVAL)
         Server->>Client: Send ApprovalRequiredEvent (APPROVAL_REQUIRED)
         Note over Server: Wait with APPROVAL_TIMEOUT_SECONDS timeout
-        alt APPROVED message received
-            Client->>Server: Send ApproveEvent (APPROVED)
+        alt APPROVE action received
+            Client->>Server: Send ApprovalResponseEvent (APPROVAL_RESPONSE: APPROVE)
+            Note over Server: Transitions to EXECUTING
             Server->>Client: Send TaskCompletedEvent (TASK_COMPLETED: SUCCESS)
+        else REJECT action received
+            Client->>Server: Send ApprovalResponseEvent (APPROVAL_RESPONSE: REJECT)
+            Note over Server: Loop regenerates draft (Transitions back to RUNNING)
         else STOP message received
             Client->>Server: Send StopEvent (STOP)
             Server->>Client: Send TaskCancelledEvent (TASK_CANCELLED: CANCELLED)
@@ -106,10 +114,12 @@ active_tasks[task_id] = {
 ```
 This is cleaned up immediately upon completion, cancellation, or connection drops to prevent memory leaks.
 
-### Human-in-the-Loop Approval Gate
-The orchestration workflow uses Python's `asyncio.Event` (`approval_event`) to pause workflow execution:
+### Iterative Human-in-the-Loop Workflow
+The orchestration workflow uses a bounded regeneration loop around drafting and self-reflection, pausing at `WAITING_APPROVAL` via Python's `asyncio.Event` (`approval_event`):
 - When entering `WAITING_APPROVAL` state, the orchestrator calls `await approval_event.wait()`.
-- If an `APPROVED` payload arrives in the websocket loop, `approval_event.set()` is called, resuming execution.
+- If an `APPROVAL_RESPONSE` payload arrives, the `WorkflowState` stores the `approval_action` (and `rejection_feedback`), and `approval_event.set()` is called.
+- If the action is `APPROVE`, the workflow breaks the loop and proceeds to `EXECUTING`.
+- If the action is `REJECT`, the workflow increments the regeneration count and loops back to regenerate the draft, utilizing the `rejection_feedback`. A guardrail limit `MAX_REGENERATION_ATTEMPTS` prevents infinite loops.
 
 ### Approval Timeout Strategy
 To prevent hanging tasks, the orchestrator wraps approval waiting in `asyncio.wait_for(...)` using a configurable timeout defined by the `APPROVAL_TIMEOUT_SECONDS` environment variable (default: `10` seconds):
@@ -179,14 +189,16 @@ All WebSocket event payloads derive from `BaseWebSocketEvent` containing the tra
 
 ### Inbound Events (Client-to-Server)
 
-#### Approve
+#### Approval Response (APPROVE / REJECT)
 ```json
 {
-  "event_type": "APPROVED",
+  "event_type": "APPROVAL_RESPONSE",
   "correlation_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
-  "task_id": "8fa16de3-d144-482d-83b9-a29bc0192d29"
+  "task_id": "8fa16de3-d144-482d-83b9-a29bc0192d29",
+  "action": "APPROVE"
 }
 ```
+*Note: For a `REJECT` action, provide the `"action": "REJECT"` and an optional `"feedback": "Make it shorter."` field to steer regeneration.*
 
 #### Stop
 ```json

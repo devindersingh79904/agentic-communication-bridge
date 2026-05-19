@@ -1,6 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel
-from app.core.enums import WebSocketEventType, TaskState, AgentStep
+from app.core.enums import WebSocketEventType, TaskState, AgentStep, ApprovalAction
 
 class BaseWebSocketEvent(BaseModel):
     """
@@ -54,11 +54,13 @@ class ErrorEvent(BaseWebSocketEvent):
     error_code: str
     message: str
 
-class ApproveEvent(BaseWebSocketEvent):
+class ApprovalResponseEvent(BaseWebSocketEvent):
     """
-    Event received from client approving the current task block.
+    Event received from client with an approval response (APPROVE/REJECT).
     """
-    event_type: WebSocketEventType = WebSocketEventType.APPROVED
+    event_type: WebSocketEventType = WebSocketEventType.APPROVAL_RESPONSE
+    action: ApprovalAction
+    feedback: Optional[str] = None
 
 class StopEvent(BaseWebSocketEvent):
     """
