@@ -8,6 +8,6 @@ export const SERVER_EVENTS = {
 
 export const CLIENT_EVENTS = {
   START_TASK: 'START_TASK',
-  APPROVED: 'APPROVED',
+  APPROVAL_RESPONSE: 'APPROVAL_RESPONSE',
   STOP: 'STOP',
 } as const;

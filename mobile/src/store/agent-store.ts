@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ConnectionStatus, TaskState, AgentStep, Message } from '../types/websocket';
+import { ConnectionStatus, TaskState, AgentStep, Message, ApprovalAction } from '../types/websocket';
 
 interface AgentState {
   // State variables
@@ -12,6 +12,8 @@ interface AgentState {
   agentMessages: Message[];
   draftMessage: string | null;
   isAwaitingApproval: boolean;
+  rejectionFeedback: string;
+  isRegenerating: boolean;
   timeoutCountdown: number | null;
   error: string | null;
   taskId: string | null;
@@ -28,6 +30,8 @@ interface AgentState {
   appendMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void;
   setDraftMessage: (draft: string | null) => void;
   setIsAwaitingApproval: (isAwaiting: boolean) => void;
+  setRejectionFeedback: (feedback: string) => void;
+  setIsRegenerating: (isRegen: boolean) => void;
   setTimeoutCountdown: (countdown: number | null | ((prev: number | null) => number | null)) => void;
   setError: (error: string | null) => void;
   setIds: (taskId: string | null, correlationId: string | null) => void;
@@ -36,7 +40,7 @@ interface AgentState {
   // Web socket controller actions
   connectWebSocket: (prompt: string) => void;
   disconnectWebSocket: () => void;
-  sendApprove: () => void;
+  sendApprovalResponse: (action: ApprovalAction, feedback?: string) => void;
   sendStop: () => void;
   resetStore: () => void;
 }
@@ -51,6 +55,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   agentMessages: [],
   draftMessage: null,
   isAwaitingApproval: false,
+  rejectionFeedback: '',
+  isRegenerating: false,
   timeoutCountdown: null,
   error: null,
   taskId: null,
@@ -76,6 +82,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     })),
   setDraftMessage: (draftMessage) => set({ draftMessage }),
   setIsAwaitingApproval: (isAwaitingApproval) => set({ isAwaitingApproval }),
+  setRejectionFeedback: (rejectionFeedback) => set({ rejectionFeedback }),
+  setIsRegenerating: (isRegenerating) => set({ isRegenerating }),
   setTimeoutCountdown: (update) =>
     set((state) => ({
       timeoutCountdown: typeof update === 'function' ? update(state.timeoutCountdown) : update,
@@ -140,12 +148,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendApprove: () => {
+  sendApprovalResponse: (action, feedback) => {
     const { socket, taskId, correlationId } = get();
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
-          event_type: 'APPROVED',
+          event_type: 'APPROVAL_RESPONSE',
+          action,
+          feedback,
           task_id: taskId,
           correlation_id: correlationId,
         })
@@ -180,6 +190,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       agentMessages: [],
       draftMessage: null,
       isAwaitingApproval: false,
+      rejectionFeedback: '',
+      isRegenerating: false,
       timeoutCountdown: null,
       error: null,
       taskId: null,

@@ -379,6 +379,15 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             logger.warning("Aborting: failed to transition to EXECUTING")
             return
             
+        event = StatusUpdateEvent(
+            correlation_id=correlation_id,
+            task_id=task_id,
+            task_state=TaskState.EXECUTING,
+            agent_step=AgentStep.EXECUTING,
+            message="Executing approved workflow..."
+        )
+        await safe_send_json(websocket, event.model_dump())
+            
         await execution_tool(state)
         
         # Step 7: SUCCESS

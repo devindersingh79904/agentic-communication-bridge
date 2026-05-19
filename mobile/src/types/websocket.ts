@@ -5,6 +5,7 @@ export type TaskState =
   | 'SCHEDULED'
   | 'RUNNING'
   | 'WAITING_APPROVAL'
+  | 'EXECUTING'
   | 'SUCCESS'
   | 'FAILED'
   | 'CANCELLED';
@@ -13,7 +14,8 @@ export type AgentStep =
   | 'SEARCHING_VENDORS'
   | 'ANALYZING_PRICING'
   | 'DRAFTING_OUTREACH'
-  | 'SELF_REFLECTION';
+  | 'SELF_REFLECTION'
+  | 'EXECUTING';
 
 export interface BaseWebSocketEvent {
   event_type: string;
@@ -62,13 +64,17 @@ export type ServerEvent =
   | TaskCancelledEvent
   | ErrorEvent;
 
+export type ApprovalAction = 'APPROVE' | 'REJECT';
+
 export interface ClientStartTaskEvent {
   event_type: 'START_TASK';
   prompt: string;
 }
 
-export interface ClientApproveEvent {
-  event_type: 'APPROVED';
+export interface ClientApprovalResponseEvent {
+  event_type: 'APPROVAL_RESPONSE';
+  action: ApprovalAction;
+  feedback?: string;
   correlation_id: string;
   task_id: string;
 }
@@ -79,7 +85,7 @@ export interface ClientStopEvent {
   task_id: string;
 }
 
-export type ClientEvent = ClientStartTaskEvent | ClientApproveEvent | ClientStopEvent;
+export type ClientEvent = ClientStartTaskEvent | ClientApprovalResponseEvent | ClientStopEvent;
 
 export interface Message {
   id: string;

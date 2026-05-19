@@ -84,6 +84,8 @@ export const connectAgentWS = (prompt: string) => {
             store.setCurrentAgentStep(null);
             store.setDraftMessage(approvalData.draft_message);
             store.setIsAwaitingApproval(true);
+            store.setIsRegenerating(false);
+            store.setRejectionFeedback('');
             store.setError(null);
 
             // Set dynamic timeout countdown (fallback to 10s if missing)

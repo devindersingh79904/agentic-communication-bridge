@@ -17,6 +17,7 @@ const DEFAULT_STEPS = [
   { id: 'ANALYZING_PRICING', label: 'Analyzing Pricing' },
   { id: 'DRAFTING_OUTREACH', label: 'Drafting Outreach' },
   { id: 'SELF_REFLECTION', label: 'Self Reflection' },
+  { id: 'EXECUTING', label: 'Executing' },
 ];
 
 export const AgentScreen = () => {
@@ -32,9 +33,13 @@ export const AgentScreen = () => {
     isAwaitingApproval,
     timeoutCountdown,
     error,
-    sendApprove,
+    sendApprovalResponse,
     sendStop,
     resetStore,
+    rejectionFeedback,
+    setRejectionFeedback,
+    isRegenerating,
+    setIsRegenerating,
     backendSteps,
     fetchMetadataEnums,
     taskId,
@@ -63,6 +68,16 @@ export const AgentScreen = () => {
   const handleStart = () => {
     if (!promptInput.trim()) return;
     connectAgentWS(promptInput.trim());
+  };
+
+  const handleApprove = () => {
+    sendApprovalResponse('APPROVE');
+  };
+
+  const handleReject = () => {
+    const feedback = rejectionFeedback.trim();
+    setIsRegenerating(true);
+    sendApprovalResponse('REJECT', feedback);
   };
 
   const handleSaveHost = () => {
@@ -108,8 +123,8 @@ export const AgentScreen = () => {
     if (taskState === 'CANCELLED' || taskState === 'FAILED') {
       return { container: styles.stepInactive, text: styles.stepTextInactive };
     }
-    if (taskState === 'WAITING_APPROVAL') {
-      // All steps completed when waiting for approval
+    if (taskState === 'WAITING_APPROVAL' || taskState === 'EXECUTING') {
+      // All steps completed when waiting for approval or executing
       return { container: styles.stepCompleted, text: styles.stepTextCompleted };
     }
 
@@ -261,7 +276,7 @@ export const AgentScreen = () => {
         <View style={styles.approvalPanel}>
           <View style={styles.approvalHeader}>
             <Text style={styles.approvalTitle}>Awaiting Outreach Approval</Text>
-            {timeoutCountdown !== null && (
+            {timeoutCountdown !== null && !isRegenerating && (
               <Text style={styles.timeoutCountdownText}>
                 Cancelling automatically in {timeoutCountdown}s
               </Text>
@@ -271,14 +286,35 @@ export const AgentScreen = () => {
             <Text style={styles.draftLabel}>GENERATED OUTREACH DRAFT</Text>
             <Text style={styles.draftText}>{draftMessage}</Text>
           </View>
-          <View style={styles.approvalActions}>
-            <TouchableOpacity style={styles.approveButton} onPress={sendApprove}>
-              <Text style={styles.actionButtonText}>Approve & Finalize</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.rejectButton} onPress={sendStop}>
-              <Text style={styles.actionButtonText}>Stop Run</Text>
-            </TouchableOpacity>
-          </View>
+
+          {isRegenerating ? (
+            <View style={styles.loaderRow}>
+              <ActivityIndicator size="small" color="#60A5FA" />
+              <Text style={styles.runningText}>Regenerating draft using your feedback...</Text>
+            </View>
+          ) : (
+            <>
+              <TextInput
+                style={styles.feedbackInput}
+                value={rejectionFeedback}
+                onChangeText={setRejectionFeedback}
+                placeholder="Optional feedback for regeneration..."
+                placeholderTextColor="#9CA3AF"
+                multiline
+              />
+              <View style={styles.approvalActions}>
+                <TouchableOpacity style={styles.approveButton} onPress={handleApprove}>
+                  <Text style={styles.actionButtonText}>Approve</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.rejectButton} onPress={handleReject}>
+                  <Text style={styles.actionButtonText}>Reject</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.stopApprovalButton} onPress={sendStop}>
+                  <Text style={styles.actionButtonText}>Stop</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -303,9 +339,11 @@ export const AgentScreen = () => {
             <View style={styles.runningContainer}>
               <View style={styles.loaderRow}>
                 <ActivityIndicator size="small" color="#60A5FA" />
-                <Text style={styles.runningText}>Agent executing workflow steps...</Text>
+                <Text style={styles.runningText}>
+                  {taskState === 'EXECUTING' ? 'Executing approved workflow...' : 'Agent executing workflow steps...'}
+                </Text>
               </View>
-              <TouchableOpacity style={styles.stopButton} onPress={disconnectAgentWS}>
+              <TouchableOpacity style={styles.stopButton} onPress={sendStop}>
                 <Text style={styles.stopButtonText}>Stop Agent</Text>
               </TouchableOpacity>
             </View>
@@ -581,7 +619,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#10B981',
     paddingVertical: 12,
     borderRadius: 8,
-    marginRight: 8,
+    marginRight: 4,
     alignItems: 'center',
   },
   rejectButton: {
@@ -589,8 +627,28 @@ const styles = StyleSheet.create({
     backgroundColor: '#EF4444',
     paddingVertical: 12,
     borderRadius: 8,
-    marginLeft: 8,
+    marginHorizontal: 4,
     alignItems: 'center',
+  },
+  stopApprovalButton: {
+    flex: 1,
+    backgroundColor: '#475569',
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginLeft: 4,
+    alignItems: 'center',
+  },
+  feedbackInput: {
+    backgroundColor: '#0F172A',
+    color: '#F8FAFC',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+    minHeight: 60,
+    marginBottom: 12,
+    borderColor: '#334155',
+    borderWidth: 1,
   },
   actionButtonText: {
     color: '#FFFFFF',
