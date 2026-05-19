@@ -434,7 +434,16 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         
     except asyncio.CancelledError:
         logger.info("Orchestration cancelled exception caught")
-        transition_task_state(task_id, TaskState.CANCELLED)
+        if websocket.client_state != WebSocketState.CONNECTED:
+            return
+            
+        task_info = active_tasks.get(task_id)
+        if task_info and task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+            return
+            
+        if task_info and task_info.get("task_state") != TaskState.CANCELLED:
+            transition_task_state(task_id, TaskState.CANCELLED)
+            
         cancelled_event = TaskCancelledEvent(
             correlation_id=correlation_id,
             task_id=task_id,

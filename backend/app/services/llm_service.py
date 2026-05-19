@@ -28,6 +28,10 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str) -> str:
                 {
                     "role": "user",
                     "content": (
+                        f"User procurement region:\n"
+                        f"City: {config.DEFAULT_CITY}\n"
+                        f"Locality: {config.DEFAULT_LOCALITY}\n"
+                        f"Pincode: {config.DEFAULT_PINCODE}\n\n"
                         f"Task: {prompt}\n\n"
                         f"Analysis: {analysis_summary}\n\n"
                         f"Generate a concise professional outreach message for the above task."
@@ -59,15 +63,23 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
     while keeping it concise and aligned with the original task prompt.
     """
     logger.info("Self-reflection started")
-    
+    location_context = (
+        f"User procurement region:\n"
+        f"City: {config.DEFAULT_CITY}\n"
+        f"Locality: {config.DEFAULT_LOCALITY}\n"
+        f"Pincode: {config.DEFAULT_PINCODE}"
+    )
+
     user_content = (
         f"Original task: {prompt}\n\n"
+        f"{location_context}\n\n"
         f"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"
     )
     
     if rejection_feedback:
         user_content = (
             f"Original task: {prompt}\n\n"
+            f"{location_context}\n\n"
             f"User rejected the previous draft with the following feedback:\n"
             f"'{rejection_feedback}'\n\n"
             f"Regenerate a better outreach draft aligned with this feedback, while keeping it concise and professional:\n\n{draft}"

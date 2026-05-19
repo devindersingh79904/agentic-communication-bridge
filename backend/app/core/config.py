@@ -18,3 +18,8 @@ OPENAI_TEMPERATURE: float = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
 AGENT_STEP_DELAY_SECONDS: int = int(os.getenv("AGENT_STEP_DELAY_SECONDS", "2"))
 
 MAX_REGENERATION_ATTEMPTS: int = int(os.getenv("MAX_REGENERATION_ATTEMPTS", "3"))
+
+# Localized Procurement Context Configs
+DEFAULT_CITY: str = os.getenv("DEFAULT_CITY", "Bangalore").strip()
+DEFAULT_LOCALITY: str = os.getenv("DEFAULT_LOCALITY", "Marathahalli").strip()
+DEFAULT_PINCODE: str = os.getenv("DEFAULT_PINCODE", "560037").strip()
