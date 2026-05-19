@@ -24,6 +24,59 @@ logger = get_logger("services.agent_orchestrator")
 # In-memory registry to track active WebSocket orchestration sessions
 active_tasks: Dict[str, Dict[str, Any]] = {}
 
+# Allowed state transitions for the workflow state machine
+VALID_TRANSITIONS = {
+    TaskState.SCHEDULED: {TaskState.RUNNING, TaskState.CANCELLED},
+    TaskState.RUNNING: {
+        TaskState.WAITING_APPROVAL,
+        TaskState.SUCCESS,
+        TaskState.FAILED,
+        TaskState.CANCELLED
+    },
+    TaskState.WAITING_APPROVAL: {
+        TaskState.SUCCESS,
+        TaskState.CANCELLED,
+        TaskState.FAILED
+    },
+    TaskState.SUCCESS: set(),
+    TaskState.FAILED: set(),
+    TaskState.CANCELLED: set(),
+}
+
+def transition_task_state(task_id: str, new_state: TaskState) -> bool:
+    """
+    Safely transitions the task state if the transition is allowed.
+    Returns True if transitioned successfully, False otherwise.
+    """
+    task_info = active_tasks.get(task_id)
+    if not task_info:
+        logger.warning("Attempted to transition non-existent task %s to state: %s", task_id, new_state)
+        return False
+        
+    current_state = task_info.get("task_state")
+    allowed = VALID_TRANSITIONS.get(current_state, set())
+    if new_state not in allowed:
+        logger.warning(
+            "Invalid task state transition requested for task %s: %s -> %s (ignored)",
+            task_id, current_state, new_state
+        )
+        return False
+        
+    task_info["task_state"] = new_state
+    logger.info("Task %s transitioned: %s -> %s", task_id, current_state, new_state)
+    return True
+
+def is_websocket_active(websocket: WebSocket) -> bool:
+    """
+    Checks if a websocket connection is already associated with an active orchestration task.
+    """
+    for task_info in active_tasks.values():
+        if task_info.get("websocket") == websocket:
+            # Check if task is in a non-terminal state
+            if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                return True
+    return False
+
 def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Event) -> None:
     """
     Registers a new active WebSocket task session in the registry.
@@ -33,7 +86,8 @@ def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Ev
         "task": None,
         "approval_event": approval_event,
         "task_state": TaskState.SCHEDULED,
-        "cancelled": False
+        "cancelled": False,
+        "terminal_emitted": False
     }
     logger.info("Orchestration task registered in registry")
 
@@ -65,14 +119,12 @@ async def cancel_task(task_id: str) -> None:
     if not task_info:
         return
         
-    state = task_info.get("task_state")
-    # If the task is already finished, ignore safely to avoid race conditions
-    if state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
-        logger.debug("Task already finished. Ignoring cancellation request.")
+    # Attempt to transition task state to CANCELLED
+    if not transition_task_state(task_id, TaskState.CANCELLED):
+        logger.debug("Task state transition to CANCELLED failed or already terminal")
         return
         
     task_info["cancelled"] = True
-    task_info["task_state"] = TaskState.CANCELLED
     
     asyncio_task = task_info.get("task")
     if asyncio_task and not asyncio_task.done():
@@ -99,9 +151,28 @@ async def safe_send_json(websocket: WebSocket, payload: dict) -> None:
     except Exception:
         logger.debug("Failed to send websocket payload, client likely disconnected")
 
+async def send_terminal_event(websocket: WebSocket, task_id: str, event: Any) -> None:
+    """
+    Sends a terminal event ensuring it's emitted only once.
+    """
+    task_info = active_tasks.get(task_id)
+    if not task_info:
+        await safe_send_json(websocket, event.model_dump())
+        return
+        
+    if task_info.get("terminal_emitted"):
+        logger.warning(
+            "Prevented duplicate terminal event emission for task %s (event: %s)",
+            task_id, event.event_type
+        )
+        return
+        
+    task_info["terminal_emitted"] = True
+    await safe_send_json(websocket, event.model_dump())
+
 async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: str) -> None:
     """
-    Simulates the async agent orchestration workflow lifecycle using lightweight tools.
+    Simulates the async agent orchestration workflow lifecycle using lightweight tools with transition validation.
     """
     # Propagate correlation_id and task_id inside the background task context
     corr_token = set_correlation_id(correlation_id)
@@ -112,7 +183,10 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
     try:
         # Step 1: SEARCHING_VENDORS
         logger.info("Entering step: SEARCHING_VENDORS")
-        active_tasks[task_id]["task_state"] = TaskState.RUNNING
+        if not transition_task_state(task_id, TaskState.RUNNING):
+            logger.warning("Aborting orchestration run: failed to transition task state to RUNNING")
+            return
+            
         event = StatusUpdateEvent(
             correlation_id=correlation_id,
             task_id=task_id,
@@ -150,14 +224,15 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             draft = await draft_tool(summary)
         except Exception as e:
             logger.error("Draft generation failed: %s", str(e))
-            error_event = ErrorEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.FAILED,
-                error_code="LLM_GENERATION_FAILED",
-                message=f"Draft generation failed: {str(e)}"
-            )
-            await safe_send_json(websocket, error_event.model_dump())
+            if transition_task_state(task_id, TaskState.FAILED):
+                error_event = ErrorEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.FAILED,
+                    error_code="LLM_GENERATION_FAILED",
+                    message=f"Draft generation failed: {str(e)}"
+                )
+                await send_terminal_event(websocket, task_id, error_event)
             return
             
         # Step 4: SELF_REFLECTION
@@ -175,20 +250,23 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             improved_draft = await reflection_tool(draft)
         except Exception as e:
             logger.error("Self-reflection failed: %s", str(e))
-            error_event = ErrorEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.FAILED,
-                error_code="LLM_GENERATION_FAILED",
-                message=f"Self-reflection failed: {str(e)}"
-            )
-            await safe_send_json(websocket, error_event.model_dump())
+            if transition_task_state(task_id, TaskState.FAILED):
+                error_event = ErrorEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.FAILED,
+                    error_code="LLM_GENERATION_FAILED",
+                    message=f"Self-reflection failed: {str(e)}"
+                )
+                await send_terminal_event(websocket, task_id, error_event)
             return
             
         # Step 5: WAITING_APPROVAL
         logger.info("Orchestration paused, waiting for user approval")
-        active_tasks[task_id]["task_state"] = TaskState.WAITING_APPROVAL
-        
+        if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
+            logger.warning("Orchestration runner aborted: failed to transition task to WAITING_APPROVAL")
+            return
+            
         approval_event = active_tasks[task_id]["approval_event"]
         app_req_event = ApprovalRequiredEvent(
             correlation_id=correlation_id,
@@ -206,18 +284,20 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             await asyncio.wait_for(approval_event.wait(), timeout=config.APPROVAL_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             logger.warning("Approval timeout exceeded. Task cancelled automatically.")
-            active_tasks[task_id]["cancelled"] = True
-            active_tasks[task_id]["task_state"] = TaskState.CANCELLED
-            
-            # Send TaskCancelledEvent
-            cancelled_event = TaskCancelledEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.CANCELLED,
-                message="Approval timeout exceeded. Task cancelled automatically."
-            )
-            await safe_send_json(websocket, cancelled_event.model_dump())
-            logger.info("Orchestration auto-cancelled due to timeout")
+            if transition_task_state(task_id, TaskState.CANCELLED):
+                task_info = active_tasks.get(task_id)
+                if task_info:
+                    task_info["cancelled"] = True
+                
+                # Send TaskCancelledEvent
+                cancelled_event = TaskCancelledEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.CANCELLED,
+                    message="Approval timeout exceeded. Task cancelled automatically."
+                )
+                await send_terminal_event(websocket, task_id, cancelled_event)
+                logger.info("Orchestration auto-cancelled due to timeout")
             return
             
         # If task was cancelled while waiting, we exit
@@ -226,22 +306,23 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             
         # Step 6: SUCCESS
         logger.info("Orchestration resumed after approval")
-        active_tasks[task_id]["task_state"] = TaskState.SUCCESS
-        
-        # Execute the execution tool
-        execution_result = await execution_tool()
-        
-        completed_event = TaskCompletedEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.SUCCESS,
-            message=f"Task successfully executed. Outreach finalized. Result: {execution_result}"
-        )
-        await safe_send_json(websocket, completed_event.model_dump())
-        logger.info("Orchestration completed successfully")
+        if transition_task_state(task_id, TaskState.SUCCESS):
+            # Execute the execution tool
+            execution_result = await execution_tool()
+            
+            completed_event = TaskCompletedEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.SUCCESS,
+                message=f"Task successfully executed. Outreach finalized. Result: {execution_result}"
+            )
+            await send_terminal_event(websocket, task_id, completed_event)
+            logger.info("Orchestration completed successfully")
         
     except asyncio.CancelledError:
-        logger.info("Orchestration cancelled")
+        logger.info("Orchestration cancelled exception caught")
+        # Ensure state transitioned to CANCELLED
+        transition_task_state(task_id, TaskState.CANCELLED)
         # Send TaskCancelledEvent
         cancelled_event = TaskCancelledEvent(
             correlation_id=correlation_id,
@@ -249,17 +330,18 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             task_state=TaskState.CANCELLED,
             message="Orchestration cancelled by client."
         )
-        await safe_send_json(websocket, cancelled_event.model_dump())
+        await send_terminal_event(websocket, task_id, cancelled_event)
     except Exception as e:
         logger.exception("Orchestration unexpected failure")
-        error_event = ErrorEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.FAILED,
-            error_code="ORCHESTRATION_FAILURE",
-            message=f"Orchestration unexpected failure: {str(e)}"
-        )
-        await safe_send_json(websocket, error_event.model_dump())
+        if transition_task_state(task_id, TaskState.FAILED):
+            error_event = ErrorEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.FAILED,
+                error_code="ORCHESTRATION_FAILURE",
+                message=f"Orchestration unexpected failure: {str(e)}"
+            )
+            await send_terminal_event(websocket, task_id, error_event)
     finally:
         correlation_id_ctx.reset(corr_token)
         task_id_ctx.reset(task_token)

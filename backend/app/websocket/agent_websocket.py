@@ -9,7 +9,8 @@ from app.services.agent_orchestrator_service import (
     set_task_reference,
     approve_task,
     cancel_task,
-    run_orchestration
+    run_orchestration,
+    is_websocket_active
 )
 
 router = APIRouter(tags=["WebSocket"])
@@ -22,6 +23,11 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     await websocket.accept()
     
+    # Guard against duplicate tasks for this websocket connection lifecycle
+    if is_websocket_active(websocket):
+        logger.warning("Duplicate task creation attempted for active websocket connection (rejected)")
+        return
+        
     # Extract correlation_id or generate a new one
     correlation_id = websocket.headers.get("x-correlation-id")
     if not correlation_id:
@@ -52,11 +58,18 @@ async def websocket_endpoint(websocket: WebSocket):
             payload = await websocket.receive_json()
             logger.info("WebSocket payload received: %s", payload)
             
+            # Payload schema validation
+            if not isinstance(payload, dict):
+                logger.warning("Invalid non-dictionary websocket payload received: %s", payload)
+                continue
+                
             event_type = payload.get("event_type")
             if event_type == WebSocketEventType.APPROVED:
                 approve_task(task_id)
             elif event_type == WebSocketEventType.STOP:
                 await cancel_task(task_id)
+            else:
+                logger.warning("Unknown websocket event received: %s", event_type)
                 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")

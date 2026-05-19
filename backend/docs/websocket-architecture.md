@@ -240,4 +240,25 @@ Instead of adopting heavy orchestration frameworks (like LangGraph or LangChain)
 - **Configurable Delays**: Simulates latency using `await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)`, which is controlled globally via the `AGENT_STEP_DELAY_SECONDS` environment variable (defaults to `2` seconds).
 - **Tracability**: Centralized log events are triggered at the start and completion of each tool, propagating `correlation_id` and `task_id` dynamically.
 
+---
 
+## 8. Guardrails & Workflow Safety
+
+### State Transition Validation
+A `VALID_TRANSITIONS` map enforces which state changes are permitted. The `transition_task_state()` helper validates every transition before applying it. Invalid transitions (e.g. `SUCCESS → RUNNING`) are logged at `WARNING` level and silently rejected, preventing the workflow from entering inconsistent states.
+
+### Terminal Event Idempotency
+A `terminal_emitted` flag in the task registry ensures that terminal WebSocket events (`SUCCESS`, `FAILED`, `CANCELLED`) are emitted at most once per task lifecycle. The `send_terminal_event()` helper checks this flag before emission, preventing race-condition duplicates when cancellation and timeout fire simultaneously.
+
+### Duplicate Task Protection
+Before registering a new orchestration task, the WebSocket handler calls `is_websocket_active(websocket)` to verify that the connection does not already have a non-terminal task running. Duplicate attempts are logged at `WARNING` level and rejected without establishing a new session.
+
+### Invalid Payload Handling
+Inbound WebSocket payloads are validated for:
+- Correct dictionary structure (non-dict payloads are logged and ignored).
+- Known `event_type` values (`APPROVED`, `STOP`). Unknown event types are logged at `WARNING` level and safely ignored without disconnecting the client.
+
+### LLM Output Validation
+Both `generate_outreach_draft()` and `self_reflect_draft()` validate their outputs before returning:
+- **Empty/whitespace-only** outputs raise a `ValueError`, which the orchestrator catches and surfaces as an `ErrorEvent` with code `LLM_GENERATION_FAILED`.
+- **Defensive truncation** caps output at 2000 characters to guard against unexpectedly long responses.
