@@ -18,13 +18,16 @@ The logging system utilizes Python's native `contextvars` to propagate `correlat
 
 ---
 
-## 1. Middleware Integration (`main.py`)
-To automatically capture and trace HTTP requests, integrate the `CorrelationIdMiddleware` into your FastAPI application.
+## 1. Initialization & Uvicorn Integration (`main.py`)
+To configure the centralized logging system and automatically capture and trace HTTP requests (including Uvicorn's access/error logs), call `setup_logging()` before initializing the FastAPI application.
 
 ```python
 from fastapi import FastAPI
+from app.core.logger import setup_logging, get_logger
 from app.core.middleware import CorrelationIdMiddleware
-from app.core.logger import get_logger
+
+# Call setup_logging FIRST to intercept Uvicorn and FastAPI loggers
+setup_logging()
 
 logger = get_logger("app.main")
 
@@ -37,6 +40,15 @@ app.add_middleware(CorrelationIdMiddleware)
 async def health_check():
     logger.info("Health check endpoint called")
     return {"status": "healthy"}
+```
+
+### Uvicorn Access Logs
+By running `setup_logging()`, the default Uvicorn loggers are overridden. Uvicorn access logs are reformatted to be cleaner and fully integrated with your correlation IDs.
+
+**Example output:**
+```text
+[2026-05-19 18:42:11.234] [INFO] [abc123] [-] [uvicorn.access] GET / 200
+[2026-05-19 18:42:11.235] [INFO] [abc123] [-] [app.main] Health check endpoint called
 ```
 
 ---
