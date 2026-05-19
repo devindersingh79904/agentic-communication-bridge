@@ -47,12 +47,11 @@ export const connectAgentWS = (prompt: string) => {
       });
 
       // Send START_TASK event with the user prompt
-      ws.send(
-        JSON.stringify({
-          event_type: CLIENT_EVENTS.START_TASK,
-          prompt: prompt,
-        })
-      );
+      const startEvent: import('../types/websocket').ClientStartTaskEvent = {
+        event_type: CLIENT_EVENTS.START_TASK,
+        prompt: prompt,
+      };
+      ws.send(JSON.stringify(startEvent));
     };
 
     ws.onmessage = (event) => {
@@ -61,32 +60,34 @@ export const connectAgentWS = (prompt: string) => {
         const { event_type, correlation_id, task_id, task_state, message } = data;
 
         if (task_id || correlation_id) {
-          store.setIds(task_id, correlation_id);
+          store.setIds(task_id ?? null, correlation_id);
         }
 
         switch (event_type) {
           case SERVER_EVENTS.STATUS_UPDATE:
-            store.updateTaskState(task_state);
+            const statusData = data as import('../types/websocket').StatusUpdateEvent;
+            store.updateTaskState(statusData.task_state);
             // Track the agent workflow step separately
-            if ('agent_step' in data && data.agent_step) {
-              store.setCurrentAgentStep(data.agent_step as AgentStep);
+            if ('agent_step' in statusData && statusData.agent_step) {
+              store.setCurrentAgentStep(statusData.agent_step as AgentStep);
             }
             store.appendMessage({
               sender: 'agent',
-              text: message,
-              agent_step: (data as any).agent_step,
+              text: statusData.message,
+              agent_step: statusData.agent_step,
             });
             break;
 
           case SERVER_EVENTS.APPROVAL_REQUIRED:
+            const approvalData = data as import('../types/websocket').ApprovalRequiredEvent;
             store.updateTaskState('WAITING_APPROVAL');
             store.setCurrentAgentStep(null);
-            store.setDraftMessage((data as any).draft_message);
+            store.setDraftMessage(approvalData.draft_message);
             store.setIsAwaitingApproval(true);
             store.setError(null);
 
             // Set dynamic timeout countdown (fallback to 10s if missing)
-            const timeoutSecs = (data as any).approval_timeout_seconds ?? 10;
+            const timeoutSecs = approvalData.approval_timeout_seconds ?? 10;
             store.setTimeoutCountdown(timeoutSecs);
 
             if (timerId) clearInterval(timerId);
@@ -104,8 +105,8 @@ export const connectAgentWS = (prompt: string) => {
 
             store.appendMessage({
               sender: 'agent',
-              text: `${message}\nDraft: "${(data as any).draft_message}"`,
-              agent_step: 'WAITING_APPROVAL',
+              text: `${approvalData.message}\nDraft: "${approvalData.draft_message}"`,
+              // We can omit agent_step here or set it to null since it's not a real step
             });
             break;
 
@@ -137,15 +138,16 @@ export const connectAgentWS = (prompt: string) => {
             break;
 
           case SERVER_EVENTS.ERROR:
+            const errorData = data as import('../types/websocket').ErrorEvent;
             if (timerId) { clearInterval(timerId); timerId = null; }
             store.updateTaskState('FAILED');
             store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
             store.setTimeoutCountdown(null);
-            store.setError(message);
+            store.setError(errorData.message);
             store.appendMessage({
               sender: 'system',
-              text: `Error (${(data as any).error_code}): ${message}`,
+              text: `Error (${errorData.error_code}): ${errorData.message}`,
             });
             ws.close();
             break;
@@ -162,6 +164,7 @@ export const connectAgentWS = (prompt: string) => {
       if (timerId) { clearInterval(timerId); timerId = null; }
       store.setConnectionStatus('error');
       store.setError('WebSocket connection error');
+      store.setCurrentPrompt(null);
       store.appendMessage({
         sender: 'system',
         text: 'Connection error encountered.',
@@ -171,6 +174,7 @@ export const connectAgentWS = (prompt: string) => {
     ws.onclose = () => {
       store.setConnectionStatus('disconnected');
       store.setSocket(null);
+      store.setCurrentPrompt(null);
       if (timerId) {
         clearInterval(timerId);
         timerId = null;

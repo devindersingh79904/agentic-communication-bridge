@@ -18,7 +18,7 @@ export type AgentStep =
 export interface BaseWebSocketEvent {
   event_type: string;
   correlation_id: string;
-  task_id: string;
+  task_id?: string;
 }
 
 export interface StatusUpdateEvent extends BaseWebSocketEvent {
@@ -86,5 +86,5 @@ export interface Message {
   sender: 'user' | 'agent' | 'system';
   text: string;
   timestamp: Date;
-  agent_step?: AgentStep | string;
+  agent_step?: AgentStep;
 }

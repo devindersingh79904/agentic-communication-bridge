@@ -16,7 +16,7 @@ interface AgentState {
   error: string | null;
   taskId: string | null;
   correlationId: string | null;
-  backendSteps: string[];
+  backendSteps: AgentStep[];
 
   // Actions
   setHostUrl: (url: string) => void;
