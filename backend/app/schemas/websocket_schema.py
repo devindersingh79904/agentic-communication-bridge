@@ -27,6 +27,7 @@ class ApprovalRequiredEvent(BaseWebSocketEvent):
     task_state: TaskState
     draft_message: str
     message: str
+    approval_timeout_seconds: Optional[int] = None
 
 class TaskCompletedEvent(BaseWebSocketEvent):
     """

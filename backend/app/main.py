@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.core.logger import setup_logging, get_logger
 from app.core.middleware import CorrelationIdMiddleware
 from app.schemas.base_response import BaseSuccessResponse
@@ -15,12 +16,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Register API Routers
-app.include_router(metadata_api.router)
-app.include_router(agent_websocket.router)
+# Enable CORS for frontend clients (e.g. React Native Web on port 8081)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Add correlation ID middleware
 app.add_middleware(CorrelationIdMiddleware)
+
+# Register API Routers
+app.include_router(metadata_api.router)
+app.include_router(agent_websocket.router)
 
 
 @app.get("/", response_model=BaseSuccessResponse)

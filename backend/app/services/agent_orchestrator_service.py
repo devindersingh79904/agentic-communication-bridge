@@ -195,7 +195,8 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             task_id=task_id,
             task_state=TaskState.WAITING_APPROVAL,
             draft_message=improved_draft,
-            message="Draft generated. Awaiting user approval."
+            message="Draft generated. Awaiting user approval.",
+            approval_timeout_seconds=config.APPROVAL_TIMEOUT_SECONDS
         )
         await safe_send_json(websocket, app_req_event.model_dump())
         
