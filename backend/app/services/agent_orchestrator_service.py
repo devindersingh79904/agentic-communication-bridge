@@ -37,6 +37,7 @@ VALID_TRANSITIONS = {
         TaskState.CANCELLED
     },
     TaskState.WAITING_APPROVAL: {
+        TaskState.RUNNING,
         TaskState.EXECUTING,
         TaskState.CANCELLED,
         TaskState.FAILED
@@ -312,6 +313,16 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                     )
                     await send_terminal_event(websocket, task_id, error_event)
                 return
+
+            if state.regeneration_count > 0:
+                regen_event = StatusUpdateEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.RUNNING,
+                    agent_step=AgentStep.SELF_REFLECTION,
+                    message="Refined draft generated successfully."
+                )
+                await safe_send_json(websocket, regen_event.model_dump())
                 
             # Step 5: WAITING_APPROVAL
             logger.info("Orchestration paused, waiting for user approval")
