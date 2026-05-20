@@ -292,6 +292,14 @@ export const AgentScreen = () => {
       {/* Awaiting Approval panel */}
       {isAwaitingApproval && draftMessage && taskState !== 'EXECUTING' && (
         <View style={styles.approvalPanel}>
+          <View style={styles.waitingApprovalContainer}>
+            <Text style={styles.waitingApprovalTitle}>
+              ⏸️ WAITING FOR APPROVAL
+            </Text>
+            <Text style={styles.waitingApprovalSubtitle}>
+              Agent paused awaiting human decision...
+            </Text>
+          </View>
           <View style={styles.approvalHeader}>
             <Text style={styles.approvalTitle}>Awaiting Outreach Approval</Text>
             {timeoutCountdown !== null && !isRegenerating && (
@@ -825,5 +833,24 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 2,
     textTransform: 'uppercase',
+  },
+  waitingApprovalContainer: {
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderColor: '#F59E0B',
+    borderWidth: 1,
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  waitingApprovalTitle: {
+    color: '#F59E0B',
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
+  waitingApprovalSubtitle: {
+    color: '#FBBF24',
+    fontSize: 11,
+    marginTop: 2,
   },
 });
