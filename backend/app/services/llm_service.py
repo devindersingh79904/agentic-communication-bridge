@@ -1,5 +1,8 @@
+import re
 from typing import Optional
+
 from openai import AsyncOpenAI
+
 from app.core import config
 from app.core.logger import get_logger
 
@@ -77,38 +80,56 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
 
 async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Optional[str] = None) -> str:
     """
-    Reviews and improves an outreach message for professionalism, tone, and clarity
-    while keeping it concise and aligned with the original task prompt.
+    Reviews and improves an outreach message using a two-pass LLM approach:
+    Pass 1: Internal evaluation (generates improvement suggestions, not returned to user).
+    Pass 2: Rewrite using evaluation insights (returned as the improved draft).
     """
     logger.info("Self-reflection started")
-    location_context = (
-        f"User procurement region:\n"
-        f"City: {config.DEFAULT_CITY}\n"
-        f"Locality: {config.DEFAULT_LOCALITY}\n"
-        f"Pincode: {config.DEFAULT_PINCODE}"
-    )
 
-    user_content = (
-        f"Original task:\n{prompt}\n\n"
-        f"Current outreach draft:\n{draft}\n\n"
-        f"Rewrite this into a polished, professional procurement outreach email.\n\n"
-        f"IMPORTANT:\n"
-        f"Return ONLY the rewritten final email.\n"
-        f"Do not include analysis or evaluation text."
+    # --- Pass 1: Internal evaluation (not returned to user) ---
+    evaluation_prompt = (
+        f"Evaluate this outreach draft for professionalism, clarity, persuasion, "
+        f"specificity, and business tone. List 2-3 concrete improvement suggestions.\n\n"
+        f"Draft:\n{draft}"
     )
-    
-    if rejection_feedback:
-        user_content = (
-            f"Original task:\n{prompt}\n\n"
-            f"User rejected the previous draft with the following feedback:\n"
-            f"'{rejection_feedback}'\n\n"
-            f"Current outreach draft:\n{draft}\n\n"
-            f"Rewrite this draft into a polished, professional procurement outreach email aligned with the feedback.\n\n"
-            f"IMPORTANT:\n"
-            f"Return ONLY the rewritten final email.\n"
-            f"Do not include analysis or evaluation text."
+    try:
+        eval_response = await client.chat.completions.create(
+            model=config.OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a senior procurement communication reviewer. Provide a brief internal evaluation."
+                },
+                {
+                    "role": "user",
+                    "content": evaluation_prompt
+                }
+            ],
+            temperature=config.REFLECTION_TEMPERATURE,
+            max_tokens=200
         )
-        
+        evaluation = eval_response.choices[0].message.content.strip()
+        logger.info("Self-reflection pass 1 (evaluation) completed")
+    except Exception:
+        logger.warning("Self-reflection pass 1 failed, proceeding with direct rewrite")
+        evaluation = "Improve professionalism, clarity, and business tone."
+
+    # --- Pass 2: Rewrite using evaluation insights ---
+    rewrite_content = (
+        f"Original task:\n{prompt}\n\n"
+        f"Internal evaluation notes:\n{evaluation}\n\n"
+        f"Current outreach draft:\n{draft}\n\n"
+    )
+    if rejection_feedback:
+        rewrite_content += (
+            f"User rejected the previous draft with feedback:\n"
+            f"'{rejection_feedback}'\n\n"
+        )
+    rewrite_content += (
+        "Rewrite the draft into a polished, professional procurement outreach email "
+        "that addresses all evaluation points.\n\n"
+        "Return ONLY the rewritten email. No commentary, no headings, no analysis."
+    )
     try:
         response = await client.chat.completions.create(
             model=config.OPENAI_MODEL,
@@ -116,37 +137,22 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
                 {
                     "role": "system",
                     "content": (
-                        "You are a senior procurement communication reviewer.\n\n"
-                        "Internally evaluate the outreach draft for:\n"
-                        "* professionalism\n"
-                        "* clarity\n"
-                        "* persuasion\n"
-                        "* specificity\n"
-                        "* business tone\n\n"
-                        "Then rewrite the message into a significantly stronger, "
-                        "more realistic, business-ready outreach.\n\n"
-                        "IMPORTANT:\n"
-                        "Return ONLY the final rewritten outreach message.\n"
-                        "Do NOT include:\n"
-                        "* evaluation sections\n"
-                        "* explanations\n"
-                        "* markdown headings\n"
-                        "* bullet points\n"
-                        "* commentary\n"
-                        "* analysis\n"
-                        "* critique text."
+                        "You are a professional email writer. "
+                        "Return ONLY the final rewritten outreach email. "
+                        "Do NOT include any evaluation, commentary, markdown headings, "
+                        "bullet points, or analysis text."
                     )
                 },
                 {
                     "role": "user",
-                    "content": user_content
+                    "content": rewrite_content
                 }
             ],
             temperature=config.REFLECTION_TEMPERATURE,
             max_tokens=150
         )
-    except Exception as e:
-        logger.exception("OpenAI request failed during self-reflection")
+    except Exception:
+        logger.exception("OpenAI request failed during self-reflection pass 2")
         raise
     improved = response.choices[0].message.content.strip()
     
@@ -155,17 +161,28 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
         logger.warning("LLM returned empty self-reflection output")
         raise ValueError("Empty self-reflection output generated by LLM")
     
-    # Defensive sanitization to strip markdown critique if it leaks
-    for marker in ["Subject:", "Dear", "To:"]:
-        idx = improved.find(marker)
-        if idx != -1:
-            before_text = improved[:idx].lower()
-            if any(kw in before_text for kw in ["evaluation", "professionalism", "critique", "clarity", "persuasion"]):
-                improved = improved[idx:]
-                break
+    # Defensive sanitization: strip any leaked evaluation/critique preamble
+    # Uses regex to detect and remove non-email content before the actual message
+    critique_pattern = re.compile(
+        r'^.*?(?=(?:Subject:|Dear\s|To\s*:))',
+        re.DOTALL | re.IGNORECASE
+    )
+    match = critique_pattern.match(improved)
+    if match:
+        preamble = match.group(0).lower()
+        critique_keywords = ["evaluation", "professionalism", "critique", "clarity",
+                             "persuasion", "assessment", "analysis", "rating", "score"]
+        if any(kw in preamble for kw in critique_keywords):
+            improved = improved[match.end():]
+            logger.info("Sanitized leaked evaluation preamble from LLM output")
+    
+    # Strip leading/trailing markdown artifacts (```, ##, etc.)
+    improved = re.sub(r'^[`#\-\s]+', '', improved).strip()
+    improved = re.sub(r'[`]+$', '', improved).strip()
     
     # Defensive truncation
     improved = improved[:MAX_OUTPUT_LENGTH]
     
-    logger.info("Self-reflection completed")
+    logger.info("Self-reflection completed (two-pass)")
     return improved
+

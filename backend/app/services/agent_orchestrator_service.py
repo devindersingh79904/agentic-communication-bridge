@@ -28,6 +28,10 @@ logger = get_logger("services.agent_orchestrator")
 # Databases/Redis are avoided: orchestration state is ephemeral and session-bound.
 active_tasks: Dict[str, Dict[str, Any]] = {}
 
+# Async lock protecting active_tasks registry mutations.
+# Ensures concurrency-safe state transitions as recommended in coding guidelines (Section 4).
+_tasks_lock = asyncio.Lock()
+
 # Allowed state transitions for the workflow state machine
 VALID_TRANSITIONS = {
     TaskState.SCHEDULED: {TaskState.RUNNING, TaskState.CANCELLED},
@@ -85,19 +89,20 @@ def is_websocket_active(websocket: WebSocket) -> bool:
                 return True
     return False
 
-def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Event) -> None:
+async def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Event) -> None:
     """
     Registers a new active WebSocket task session in the registry in SCHEDULED state.
     """
-    active_tasks[task_id] = {
-        "websocket": websocket,
-        "task": None,
-        "approval_event": approval_event,
-        "task_state": TaskState.SCHEDULED,
-        "cancelled": False,
-        "terminal_emitted": False,
-        "workflow_state": None
-    }
+    async with _tasks_lock:
+        active_tasks[task_id] = {
+            "websocket": websocket,
+            "task": None,
+            "approval_event": approval_event,
+            "task_state": TaskState.SCHEDULED,
+            "cancelled": False,
+            "terminal_emitted": False,
+            "workflow_state": None
+        }
     logger.info("Orchestration task registered in registry")
 
 def set_task_reference(task_id: str, task: asyncio.Task) -> None:
@@ -143,18 +148,19 @@ async def cancel_task(task_id: str) -> None:
     """
     Cancels the active task and interrupts the background orchestration task.
     """
-    task_info = active_tasks.get(task_id)
-    if not task_info:
-        return
-        
-    if task_info.get("task_state") == TaskState.CANCELLED:
-        return
-        
-    if not transition_task_state(task_id, TaskState.CANCELLED):
-        logger.debug("Task state transition to CANCELLED failed or already terminal")
-        return
-        
-    task_info["cancelled"] = True
+    async with _tasks_lock:
+        task_info = active_tasks.get(task_id)
+        if not task_info:
+            return
+            
+        if task_info.get("task_state") == TaskState.CANCELLED:
+            return
+            
+        if not transition_task_state(task_id, TaskState.CANCELLED):
+            logger.debug("Task state transition to CANCELLED failed or already terminal")
+            return
+            
+        task_info["cancelled"] = True
     
     asyncio_task = task_info.get("task")
     if asyncio_task and not asyncio_task.done():
@@ -162,13 +168,14 @@ async def cancel_task(task_id: str) -> None:
         asyncio_task.cancel()
         await asyncio.gather(asyncio_task, return_exceptions=True)
         
-def cleanup_task(task_id: str) -> None:
+async def cleanup_task(task_id: str) -> None:
     """
     Removes the task from the registry to prevent memory leaks.
     """
-    if task_id in active_tasks:
-        active_tasks.pop(task_id)
-        logger.info("Orchestration task cleaned up from registry")
+    async with _tasks_lock:
+        if task_id in active_tasks:
+            active_tasks.pop(task_id)
+            logger.info("Orchestration task cleaned up from registry")
 
 async def safe_send_json(websocket: WebSocket, payload: dict) -> None:
     """
@@ -452,8 +459,6 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
     except asyncio.CancelledError:
         logger.info("Orchestration cancelled exception caught")
         task_info = active_tasks.get(task_id)
-        if task_info and task_info.get("task_state") == TaskState.CANCELLED:
-            return
             
         if websocket.client_state != WebSocketState.CONNECTED:
             return
@@ -485,4 +490,4 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
     finally:
         correlation_id_ctx.reset(corr_token)
         task_id_ctx.reset(task_token)
-        cleanup_task(task_id)
+        await cleanup_task(task_id)

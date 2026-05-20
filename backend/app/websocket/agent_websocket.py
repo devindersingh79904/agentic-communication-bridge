@@ -46,7 +46,7 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # Create the approval event and register task in SCHEDULED state
     approval_event = asyncio.Event()
-    register_task(task_id, websocket, approval_event)
+    await register_task(task_id, websocket, approval_event)
     
     orchestration_started = False
     
