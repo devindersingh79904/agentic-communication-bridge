@@ -258,12 +258,13 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         while state.regeneration_count <= config.MAX_REGENERATION_ATTEMPTS:
             # Step 3: DRAFTING_OUTREACH
             logger.info("Entering step: DRAFTING_OUTREACH")
+            draft_msg = "Regenerating outreach draft..." if state.regeneration_count > 0 else "Drafting outreach..."
             event = StatusUpdateEvent(
                 correlation_id=correlation_id,
                 task_id=task_id,
                 task_state=TaskState.RUNNING,
                 agent_step=AgentStep.DRAFTING_OUTREACH,
-                message="Drafting outreach..."
+                message=draft_msg
             )
             await safe_send_json(websocket, event.model_dump())
             
@@ -287,12 +288,13 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 
             # Step 4: SELF_REFLECTION
             logger.info("Entering step: SELF_REFLECTION")
+            reflect_msg = "Refining self-reflection..." if state.regeneration_count > 0 else "Performing self-reflection..."
             event = StatusUpdateEvent(
                 correlation_id=correlation_id,
                 task_id=task_id,
                 task_state=TaskState.RUNNING,
                 agent_step=AgentStep.SELF_REFLECTION,
-                message="Performing self-reflection..."
+                message=reflect_msg
             )
             await safe_send_json(websocket, event.model_dump())
             

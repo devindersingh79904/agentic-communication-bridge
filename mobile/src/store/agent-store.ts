@@ -21,6 +21,7 @@ interface AgentState {
   taskId: string | null;
   correlationId: string | null;
   backendSteps: AgentStep[];
+  cancellationReason: string | null;
 
   // Actions
   setHostUrl: (url: string) => void;
@@ -37,6 +38,7 @@ interface AgentState {
   setTimeoutCountdown: (countdown: number | null | ((prev: number | null) => number | null)) => void;
   setError: (error: string | null) => void;
   setIds: (taskId: string | null, correlationId: string | null) => void;
+  setCancellationReason: (reason: string | null) => void;
   fetchMetadataEnums: () => Promise<void>;
 
   // Web socket controller actions
@@ -64,6 +66,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   taskId: null,
   correlationId: null,
   backendSteps: [],
+  cancellationReason: null,
 
   setHostUrl: (hostUrl) => set({ hostUrl }),
   setSocket: (socket) => set({ socket }),
@@ -72,16 +75,25 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setCurrentAgentStep: (currentAgentStep) => set({ currentAgentStep }),
   setCurrentPrompt: (currentPrompt) => set({ currentPrompt }),
   appendMessage: (msg) =>
-    set((state) => ({
-      agentMessages: [
-        ...state.agentMessages,
-        {
-          ...msg,
-          id: Math.random().toString(36).slice(2, 11),
-          timestamp: new Date(),
-        },
-      ],
-    })),
+    set((state) => {
+      // Prevent duplicate system/status messages (consecutive-only)
+      if (msg.sender === 'system' || msg.sender === 'agent') {
+        const lastMsg = state.agentMessages[state.agentMessages.length - 1];
+        if (lastMsg && lastMsg.sender === msg.sender && lastMsg.text === msg.text) {
+          return {};
+        }
+      }
+      return {
+        agentMessages: [
+          ...state.agentMessages,
+          {
+            ...msg,
+            id: Math.random().toString(36).slice(2, 11),
+            timestamp: new Date(),
+          },
+        ],
+      };
+    }),
   setDraftMessage: (draftMessage) => set({ draftMessage }),
   setIsAwaitingApproval: (isAwaitingApproval) => set({ isAwaitingApproval }),
   setRejectionFeedback: (rejectionFeedback) => set({ rejectionFeedback }),
@@ -92,6 +104,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     })),
   setError: (error) => set({ error }),
   setIds: (taskId, correlationId) => set({ taskId, correlationId }),
+  setCancellationReason: (cancellationReason) => set({ cancellationReason }),
 
   fetchMetadataEnums: async () => {
     const baseUrl = HTTP_BASE_URL;
@@ -146,9 +159,26 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   sendApprovalResponse: (action, feedback) => {
     const { socket, taskId, correlationId } = get();
     set({ isAwaitingApproval: false });
-    if (action === 'REJECT') {
+    
+    if (action === 'APPROVE') {
+      get().appendMessage({
+        sender: 'system',
+        text: 'You approved the draft.',
+      });
+    } else if (action === 'REJECT') {
+      get().appendMessage({
+        sender: 'system',
+        text: 'You rejected the draft and requested regeneration.',
+      });
+      if (feedback && feedback.trim()) {
+        get().appendMessage({
+          sender: 'system',
+          text: `Feedback: "${feedback.trim()}"`,
+        });
+      }
       set({ isRegenerating: true });
     }
+
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
@@ -168,6 +198,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     // Immediate optimistic cleanup
     set({
       taskState: 'CANCELLED',
+      cancellationReason: 'user',
       isAwaitingApproval: false,
       isRegenerating: false,
       timeoutCountdown: null,
@@ -207,6 +238,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       taskId: null,
       correlationId: null,
       backendSteps: [],
+      cancellationReason: null,
     }));
   },
 }));

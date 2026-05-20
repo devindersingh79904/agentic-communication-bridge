@@ -44,11 +44,14 @@ export const AgentScreen = () => {
     fetchMetadataEnums,
     taskId,
     correlationId,
+    cancellationReason,
   } = useAgentStore();
 
   const [promptInput, setPromptInput] = useState('Find reliable procurement vendors for custom server hardware.');
   const [isEditingHost, setIsEditingHost] = useState(false);
   const [tempHost, setTempHost] = useState(hostUrl);
+  const [isTaskIdExpanded, setIsTaskIdExpanded] = useState(false);
+  const [isCorrelationIdExpanded, setIsCorrelationIdExpanded] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
 
@@ -144,7 +147,7 @@ export const AgentScreen = () => {
     if (item.sender === 'system') {
       return (
         <View style={styles.systemMessageContainer}>
-          <Text style={styles.systemMessageText}>{item.text}</Text>
+          <Text style={styles.systemMessageText}>⚙️ {item.text}</Text>
         </View>
       );
     }
@@ -163,6 +166,9 @@ export const AgentScreen = () => {
             isUser ? styles.messageUserBubble : styles.messageAgentBubble,
           ]}
         >
+          <Text style={isUser ? styles.messageRoleLabelUser : styles.messageRoleLabelAgent}>
+            {isUser ? '👤 YOU' : '🤖 AGENT'}
+          </Text>
           {!isUser && item.agent_step && (
             <Text style={styles.messageStepLabel}>{String(item.agent_step).replace(/_/g, ' ')}</Text>
           )}
@@ -191,9 +197,18 @@ export const AgentScreen = () => {
           </View>
           {/* Show task and correlation IDs when available */}
           {taskId && (
-            <Text style={styles.idBadge} numberOfLines={1}>
-              Task: {taskId.slice(0, 8)}… | Corr: {correlationId ? correlationId.slice(0, 8) + '…' : '–'}
-            </Text>
+            <View style={styles.idBadgeCol}>
+              <TouchableOpacity onPress={() => setIsTaskIdExpanded(!isTaskIdExpanded)}>
+                <Text style={styles.idBadge} numberOfLines={isTaskIdExpanded ? undefined : 1}>
+                  Task: {isTaskIdExpanded ? taskId : `${taskId.slice(0, 8)}…`}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setIsCorrelationIdExpanded(!isCorrelationIdExpanded)}>
+                <Text style={styles.idBadge} numberOfLines={isCorrelationIdExpanded ? undefined : 1}>
+                  Corr: {correlationId ? (isCorrelationIdExpanded ? correlationId : `${correlationId.slice(0, 8)}…`) : '–'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           )}
           {/* Show active prompt */}
           {currentPrompt && taskState !== 'IDLE' && (
@@ -335,6 +350,17 @@ export const AgentScreen = () => {
           </View>
         )}
 
+        {taskState === 'CANCELLED' && (
+          <View style={styles.cancelledBanner}>
+            <Text style={styles.cancelledText}>
+              ⏹️ {cancellationReason === 'timeout'
+                ? 'Task cancelled automatically due to approval timeout.'
+                : 'Task cancelled by user.'}
+            </Text>
+            <Text style={styles.retryHintText}>You can initialize a new run below.</Text>
+          </View>
+        )}
+
         {!isRunning ? (
           <View style={styles.inputContainer}>
             <TextInput
@@ -361,7 +387,7 @@ export const AgentScreen = () => {
               <TouchableOpacity
                 style={styles.stopButton}
                 onPress={sendStop}
-                disabled={taskState === 'CANCELLED'}
+                disabled={connectionStatus !== 'connected'}
               >
                 <Text style={styles.stopButtonText}>Stop Agent</Text>
               </TouchableOpacity>
@@ -763,9 +789,41 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   retryHintText: {
-    color: '#EF4444',
+    color: '#94A3B8',
     fontSize: 11,
     marginTop: 4,
     fontWeight: '600',
+  },
+  idBadgeCol: {
+    flexDirection: 'column',
+    marginTop: 2,
+    alignItems: 'flex-start',
+  },
+  cancelledBanner: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderColor: '#F59E0B',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  cancelledText: {
+    color: '#F59E0B',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  messageRoleLabelUser: {
+    fontSize: 9,
+    color: '#93C5FD',
+    fontWeight: 'bold',
+    marginBottom: 2,
+    textTransform: 'uppercase',
+  },
+  messageRoleLabelAgent: {
+    fontSize: 9,
+    color: '#34D399',
+    fontWeight: 'bold',
+    marginBottom: 2,
+    textTransform: 'uppercase',
   },
 });

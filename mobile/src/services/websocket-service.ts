@@ -65,15 +65,25 @@ export const connectAgentWS = (prompt: string) => {
             if ('agent_step' in statusData && statusData.agent_step) {
               store.setCurrentAgentStep(statusData.agent_step as AgentStep);
             }
+            
+            let messageText = statusData.message;
+            if (statusData.agent_step === 'DRAFTING_OUTREACH' && store.isRegenerating) {
+              messageText = 'Regenerating outreach draft...';
+            } else if (statusData.agent_step === 'SELF_REFLECTION' && store.isRegenerating) {
+              messageText = 'Performing self-reflection...';
+            }
+
             store.appendMessage({
               sender: 'agent',
-              text: statusData.message,
+              text: messageText,
               agent_step: statusData.agent_step,
             });
             break;
 
           case SERVER_EVENTS.APPROVAL_REQUIRED:
             const approvalData = data as import('../types/websocket').ApprovalRequiredEvent;
+            const wasRegenerating = store.isRegenerating;
+
             store.updateTaskState('WAITING_APPROVAL');
             store.setCurrentAgentStep(null);
             store.setDraftMessage(approvalData.draft_message);
@@ -99,9 +109,18 @@ export const connectAgentWS = (prompt: string) => {
               });
             }, 1000);
 
+            if (wasRegenerating) {
+              store.appendMessage({
+                sender: 'system',
+                text: 'Draft regenerated successfully.',
+              });
+            }
+
             store.appendMessage({
               sender: 'agent',
-              text: `Initial Draft:\n${approvalData.draft_message}`,
+              text: wasRegenerating
+                ? `Refined Draft:\n${approvalData.draft_message}`
+                : `Initial Draft:\n${approvalData.draft_message}`,
             });
             break;
 
@@ -136,6 +155,10 @@ export const connectAgentWS = (prompt: string) => {
             store.setIsRegenerating(false);
             store.setTimeoutCountdown(null);
             store.setDraftMessage(null);
+            
+            const isTimeout = message.toLowerCase().includes('timeout');
+            store.setCancellationReason(isTimeout ? 'timeout' : 'user');
+
             store.appendMessage({
               sender: 'system',
               text: `Cancelled: ${message}`,
