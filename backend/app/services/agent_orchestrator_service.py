@@ -6,6 +6,7 @@ from starlette.websockets import WebSocketState
 from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
 from app.core.enums import TaskState, AgentStep, ApprovalAction
 from app.core import config
+from app.services.llm_service import get_provider_name
 from app.models.workflow_state import WorkflowState
 from app.schemas.websocket_schema import (
     StatusUpdateEvent,
@@ -286,8 +287,8 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         task_state=TaskState.FAILED,
                         error_code="LLM_EXECUTION_FAILED",
                         message=(
-                            "AI outreach generation failed. "
-                            "Please verify OpenAI configuration and try again."
+                            f"AI outreach generation failed. "
+                            f"Please verify {get_provider_name().capitalize()} configuration and try again."
                         )
                     )
                     await send_terminal_event(websocket, task_id, error_event)
@@ -316,8 +317,8 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         task_state=TaskState.FAILED,
                         error_code="LLM_EXECUTION_FAILED",
                         message=(
-                            "AI draft self-reflection failed. "
-                            "Please verify OpenAI configuration and try again."
+                            f"AI draft self-reflection failed. "
+                            f"Please verify {get_provider_name().capitalize()} configuration and try again."
                         )
                     )
                     await send_terminal_event(websocket, task_id, error_event)

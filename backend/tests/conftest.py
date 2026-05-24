@@ -5,10 +5,12 @@ if "OPENAI_API_KEY" not in os.environ or not os.environ["OPENAI_API_KEY"]:
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.services.agent_orchestrator_service import active_tasks
+from openai import AsyncOpenAI
+
 
 @pytest.fixture(autouse=True)
 async def clean_registry():
@@ -17,13 +19,24 @@ async def clean_registry():
     yield
     active_tasks.clear()
 
+
 @pytest.fixture
 def test_client():
     """FastAPI TestClient fixture."""
     return TestClient(app)
 
+
 @pytest.fixture
 def mock_openai():
-    """Mock the OpenAI client chat completion call."""
-    with patch("app.services.llm_service.client.chat.completions.create", new_callable=AsyncMock) as mock_create:
+    """
+    Mock the LLM client at the `get_client()` level.
+
+    Creates a fake AsyncOpenAI instance whose
+    `chat.completions.create` attribute is an AsyncMock.
+    """
+    mock_client = MagicMock(spec=AsyncOpenAI)
+    mock_create = AsyncMock()
+    mock_client.chat.completions.create = mock_create
+
+    with patch("app.services.llm_service.get_client", return_value=mock_client):
         yield mock_create
