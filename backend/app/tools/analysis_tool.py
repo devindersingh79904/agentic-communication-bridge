@@ -1,27 +1,17 @@
-import asyncio
-import random
-from app.core import config
 from app.core.logger import get_logger
 from app.models.workflow_state import WorkflowState
+from app.services.llm_service import generate_analysis
 
 logger = get_logger("tools.analysis")
 
 async def analysis_tool(state: WorkflowState) -> None:
     """
-    Simulates vendor pricing analysis. Reads state.research_data, writes state.analysis_summary.
+    Uses LLM to analyze vendor research data and recommend the best vendor.
+    Reads state.research_data, writes state.analysis_summary and state.selected_vendor.
     """
     logger.info("Analysis tool execution started")
-    await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)
-    vendors = state.research_data.get("vendors", []) if state.research_data else []
-    if vendors:
-        selected_vendor = random.choice(vendors)
-        state.selected_vendor = selected_vendor
-        vendor_names = [v.get("name") for v in vendors]
-        state.analysis_summary = (
-            f"Analyzed pricing for vendors: {', '.join(vendor_names)}. "
-            f"Selected preferred vendor: {selected_vendor['name']} located in "
-            f"{selected_vendor['location']} based on pricing and availability."
-        )
-    else:
-        state.analysis_summary = "No vendors found to analyze."
+    research_data = state.research_data or {}
+    analysis_summary, selected_vendor = await generate_analysis(research_data, state.prompt)
+    state.analysis_summary = analysis_summary
+    state.selected_vendor = selected_vendor
     logger.info("Analysis tool execution completed")
