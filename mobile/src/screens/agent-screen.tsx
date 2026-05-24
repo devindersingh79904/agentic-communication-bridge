@@ -7,10 +7,11 @@ import {
   TouchableOpacity,
   FlatList,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { useAgentStore } from '../store/agent-store';
 import { connectAgentWS, disconnectAgentWS } from '../services/websocket-service';
-import { Message } from '../types/websocket';
+import { Message, AgentStep } from '../types/websocket';
 
 const DEFAULT_STEPS = [
   { id: 'SEARCHING_VENDORS', label: 'Searching Vendors' },
@@ -19,6 +20,14 @@ const DEFAULT_STEPS = [
   { id: 'SELF_REFLECTION', label: 'Self Reflection' },
   { id: 'EXECUTING', label: 'Executing' },
 ];
+
+const STEP_LABELS: Record<string, string> = {
+  SEARCHING_VENDORS: 'Vendor Research',
+  ANALYZING_PRICING: 'Pricing Analysis',
+  DRAFTING_OUTREACH: 'Outreach Draft',
+  SELF_REFLECTION: 'Self Reflection',
+  EXECUTING: 'Execution',
+};
 
 export const AgentScreen = () => {
   const {
@@ -45,6 +54,8 @@ export const AgentScreen = () => {
     taskId,
     correlationId,
     cancellationReason,
+    currentPendingStep,
+    currentStepData,
   } = useAgentStore();
 
   const [promptInput, setPromptInput] = useState('Find reliable procurement vendors for custom server hardware.');
@@ -54,6 +65,7 @@ export const AgentScreen = () => {
   const [isCorrelationIdExpanded, setIsCorrelationIdExpanded] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   // Fetch dynamic metadata enums from the backend on mount
   useEffect(() => {
@@ -67,6 +79,15 @@ export const AgentScreen = () => {
       }, 100);
     }
   }, [agentMessages]);
+
+  // Auto-scroll to bottom when approval panel appears
+  useEffect(() => {
+    if (isAwaitingApproval && scrollViewRef.current) {
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 200);
+    }
+  }, [isAwaitingApproval, currentStepData]);
 
   const handleStart = () => {
     if (!promptInput.trim()) return;
@@ -129,8 +150,19 @@ export const AgentScreen = () => {
     if (taskState === 'CANCELLED' || taskState === 'FAILED') {
       return { container: styles.stepInactive, text: styles.stepTextInactive };
     }
-    if (taskState === 'WAITING_APPROVAL' || taskState === 'EXECUTING') {
-      // All steps completed when waiting for approval or executing
+    // If waiting for approval, highlight the pending step
+    if (taskState === 'WAITING_APPROVAL') {
+      if (stepId === currentPendingStep) {
+        return { container: styles.stepPending, text: styles.stepTextActive };
+      }
+      // Steps before the pending step are completed
+      const pendingIndex = stepsToRender.findIndex((s) => s.id === currentPendingStep);
+      if (stepIndex < pendingIndex && pendingIndex !== -1) {
+        return { container: styles.stepCompleted, text: styles.stepTextCompleted };
+      }
+      return { container: styles.stepInactive, text: styles.stepTextInactive };
+    }
+    if (taskState === 'EXECUTING') {
       return { container: styles.stepCompleted, text: styles.stepTextCompleted };
     }
 
@@ -182,6 +214,23 @@ export const AgentScreen = () => {
   };
 
   const isRunning = connectionStatus !== 'disconnected' || taskState === 'SCHEDULED';
+
+  const getStepHeaderLabel = () => {
+    if (!currentPendingStep) return 'Awaiting Approval';
+    return STEP_LABELS[currentPendingStep] || formatStepLabel(currentPendingStep);
+  };
+
+  const getStepHeaderIcon = () => {
+    if (!currentPendingStep) return '📋';
+    switch (currentPendingStep) {
+      case 'SEARCHING_VENDORS': return '🔍';
+      case 'ANALYZING_PRICING': return '📊';
+      case 'DRAFTING_OUTREACH': return '✉️';
+      case 'SELF_REFLECTION': return '🔄';
+      case 'EXECUTING': return '🚀';
+      default: return '📋';
+    }
+  };
 
   return (
     <View style={styles.screen}>
@@ -272,81 +321,92 @@ export const AgentScreen = () => {
         </View>
       )}
 
-      {/* Message Flatlist */}
-      <FlatList
-        ref={flatListRef}
-        data={agentMessages}
-        renderItem={renderMessage}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.chatListContent}
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyTitle}>Welcome to Trybo Agent</Text>
-            <Text style={styles.emptySubtitle}>
-              Initialize a task and see the human-in-the-loop agent run live.
-            </Text>
-          </View>
-        }
-      />
-
-      {/* Awaiting Approval panel */}
-      {isAwaitingApproval && draftMessage && taskState !== 'EXECUTING' && (
-        <View style={styles.approvalPanel}>
-          <View style={styles.waitingApprovalContainer}>
-            <Text style={styles.waitingApprovalTitle}>
-              ⏸️ WAITING FOR APPROVAL
-            </Text>
-            <Text style={styles.waitingApprovalSubtitle}>
-              Agent paused awaiting human decision...
-            </Text>
-          </View>
-          <View style={styles.approvalHeader}>
-            <Text style={styles.approvalTitle}>Awaiting Outreach Approval</Text>
-            {timeoutCountdown !== null && !isRegenerating && (
-              <Text style={styles.timeoutCountdownText}>
-                Cancelling automatically in {timeoutCountdown}s
+      {/* Scrollable content area */}
+      <ScrollView
+        ref={scrollViewRef}
+        style={styles.scrollArea}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Message Flatlist */}
+        <FlatList
+          ref={flatListRef}
+          data={agentMessages}
+          renderItem={renderMessage}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.chatListContent}
+          scrollEnabled={false}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyTitle}>Welcome to Trybo Agent</Text>
+              <Text style={styles.emptySubtitle}>
+                Initialize a task and see the human-in-the-loop agent run live.
               </Text>
+            </View>
+          }
+        />
+
+        {/* Awaiting Approval panel */}
+        {isAwaitingApproval && (
+          <View style={styles.approvalPanel}>
+            <View style={styles.waitingApprovalContainer}>
+              <Text style={styles.waitingApprovalTitle}>
+                {getStepHeaderIcon()} WAITING FOR APPROVAL — {getStepHeaderLabel().toUpperCase()}
+              </Text>
+              <Text style={styles.waitingApprovalSubtitle}>
+                Agent paused awaiting human decision...
+              </Text>
+            </View>
+            <View style={styles.approvalHeader}>
+              <Text style={styles.approvalTitle}>{getStepHeaderLabel()}</Text>
+              {timeoutCountdown !== null && !isRegenerating && (
+                <Text style={styles.timeoutCountdownText}>
+                  Auto-cancel in {timeoutCountdown}s
+                </Text>
+              )}
+            </View>
+            <View style={styles.draftCard}>
+              <Text style={styles.draftLabel}>{getStepHeaderLabel().toUpperCase()} — OUTPUT</Text>
+              <Text style={styles.draftText}>{currentStepData || draftMessage || 'Step completed.'}</Text>
+            </View>
+
+            {isRegenerating ? (
+              <View style={styles.loaderRow}>
+                <ActivityIndicator size="small" color="#60A5FA" />
+                <Text style={styles.runningText}>
+                  Re-running {getStepHeaderLabel().toLowerCase()} based on feedback...
+                </Text>
+              </View>
+            ) : (
+              <>
+                <TextInput
+                  style={styles.feedbackInput}
+                  value={rejectionFeedback}
+                  onChangeText={setRejectionFeedback}
+                  placeholder="Optional feedback for regeneration..."
+                  placeholderTextColor="#9CA3AF"
+                  multiline
+                />
+                <View style={styles.approvalActions}>
+                  <TouchableOpacity style={styles.approveButton} onPress={handleApprove}>
+                    <Text style={styles.actionButtonText}>✅ Approve</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.rejectButton} onPress={handleReject}>
+                    <Text style={styles.actionButtonText}>❌ Reject</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.stopApprovalButton}
+                    onPress={sendStop}
+                    disabled={taskState === 'CANCELLED'}
+                  >
+                    <Text style={styles.actionButtonText}>⏹ Stop</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
             )}
           </View>
-          <View style={styles.draftCard}>
-            <Text style={styles.draftLabel}>GENERATED OUTREACH DRAFT</Text>
-            <Text style={styles.draftText}>{draftMessage}</Text>
-          </View>
-
-          {isRegenerating ? (
-            <View style={styles.loaderRow}>
-              <ActivityIndicator size="small" color="#60A5FA" />
-              <Text style={styles.runningText}>Regenerating draft using your feedback...</Text>
-            </View>
-          ) : (
-            <>
-              <TextInput
-                style={styles.feedbackInput}
-                value={rejectionFeedback}
-                onChangeText={setRejectionFeedback}
-                placeholder="Optional feedback for regeneration..."
-                placeholderTextColor="#9CA3AF"
-                multiline
-              />
-              <View style={styles.approvalActions}>
-                <TouchableOpacity style={styles.approveButton} onPress={handleApprove}>
-                  <Text style={styles.actionButtonText}>Approve</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.rejectButton} onPress={handleReject}>
-                  <Text style={styles.actionButtonText}>Reject</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.stopApprovalButton}
-                  onPress={sendStop}
-                  disabled={taskState === 'CANCELLED'}
-                >
-                  <Text style={styles.actionButtonText}>Stop</Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
-        </View>
-      )}
+        )}
+      </ScrollView>
 
       {/* Footer controls */}
       <View style={styles.footer}>
@@ -519,6 +579,9 @@ const styles = StyleSheet.create({
   stepActive: {
     backgroundColor: '#2563EB',
   },
+  stepPending: {
+    backgroundColor: '#D97706',
+  },
   stepCompleted: {
     backgroundColor: '#059669',
   },
@@ -544,12 +607,17 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#475569',
   },
-  chatListContent: {
+  scrollArea: {
+    flex: 1,
+  },
+  scrollContent: {
     flexGrow: 1,
+  },
+  chatListContent: {
     padding: 16,
+    paddingBottom: 8,
   },
   emptyContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingVertical: 80,
@@ -625,8 +693,11 @@ const styles = StyleSheet.create({
   approvalPanel: {
     backgroundColor: '#1E293B',
     borderTopWidth: 2,
-    borderTopColor: '#2563EB',
+    borderTopColor: '#D97706',
     padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 8,
   },
   approvalHeader: {
     flexDirection: 'row',
@@ -669,16 +740,16 @@ const styles = StyleSheet.create({
   },
   approveButton: {
     flex: 1,
-    backgroundColor: '#10B981',
-    paddingVertical: 12,
+    backgroundColor: '#059669',
+    paddingVertical: 14,
     borderRadius: 8,
     marginRight: 4,
     alignItems: 'center',
   },
   rejectButton: {
     flex: 1,
-    backgroundColor: '#EF4444',
-    paddingVertical: 12,
+    backgroundColor: '#DC2626',
+    paddingVertical: 14,
     borderRadius: 8,
     marginHorizontal: 4,
     alignItems: 'center',
@@ -686,7 +757,7 @@ const styles = StyleSheet.create({
   stopApprovalButton: {
     flex: 1,
     backgroundColor: '#475569',
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderRadius: 8,
     marginLeft: 4,
     alignItems: 'center',

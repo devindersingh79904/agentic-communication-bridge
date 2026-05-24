@@ -141,10 +141,11 @@ async def _llm_call(
 # Tool-specific LLM helpers
 # ---------------------------------------------------------------------------
 
-async def generate_research_data(prompt: str) -> dict:
+async def generate_research_data(prompt: str, feedback: Optional[str] = None) -> dict:
     """
     Uses LLM to perform deep research on the user's topic and return
     structured vendor/market research data as a dict.
+    If feedback is provided (from a previous rejection it will be used to refine the research).
     """
     logger.info("Research data generation started (provider=%s, model=%s)", config.AGENT_PROVIDER, _get_model())
 
@@ -163,11 +164,20 @@ async def generate_research_data(prompt: str) -> dict:
         "Return ONLY the JSON object. No other text, explanation, or markdown."
     )
 
+    feedback_context = ""
+    if feedback and feedback.strip():
+        feedback_context = (
+            f"\n\nThe user reviewed your previous research and provided the following feedback. "
+            f"Please use it to improve your research:\n"
+            f"{feedback.strip()}\n"
+        )
+
     user_content = (
         f"Conduct deep research on the following topic and identify relevant vendors, "
         f"market insights, and a recommended approach.\n\n"
         f"Topic: {prompt}\n\n"
         f"Research should be realistic, detailed, and directly relevant to the topic."
+        f"{feedback_context}"
     )
 
     try:
@@ -193,10 +203,12 @@ async def generate_research_data(prompt: str) -> dict:
         }
 
 
-async def generate_analysis(research_data: dict, prompt: str) -> tuple[str, Optional[dict]]:
+async def generate_analysis(research_data: dict, prompt: str, feedback: Optional[str] = None) -> tuple[str, Optional[dict]]:
     """
     Uses LLM to analyze vendor pricing and data from research, then selects the
     best vendor and generates an analysis summary.
+    If feedback is provided (from user approval/rejection of previous step), it's
+    used to guide the analysis.
     Returns (analysis_summary, selected_vendor).
     """
     logger.info("Analysis generation started (provider=%s, model=%s)", config.AGENT_PROVIDER, _get_model())
@@ -212,10 +224,19 @@ async def generate_analysis(research_data: dict, prompt: str) -> tuple[str, Opti
         "Return ONLY the JSON object. No other text, explanation, or markdown."
     )
 
+    feedback_context = ""
+    if feedback and feedback.strip():
+        feedback_context = (
+            f"\n\nThe user provided the following feedback from the previous step. "
+            f"Please incorporate it into your analysis:\n"
+            f"{feedback.strip()}\n"
+        )
+
     user_content = (
         f"Task: {prompt}\n\n"
         f"Research Data:\n{json.dumps(research_data, indent=2)}\n\n"
         f"Analyze this research data and recommend the best vendor."
+        f"{feedback_context}"
     )
 
     try:

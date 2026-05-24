@@ -87,6 +87,8 @@ export const connectAgentWS = (prompt: string) => {
             store.updateTaskState('WAITING_APPROVAL');
             store.setCurrentAgentStep(null);
             store.setDraftMessage(approvalData.draft_message);
+            store.setCurrentPendingStep(approvalData.agent_step);
+            store.setCurrentStepData(approvalData.step_data ?? approvalData.draft_message);
             store.setIsAwaitingApproval(true);
             store.setIsRegenerating(false);
             store.setRejectionFeedback('');
@@ -109,18 +111,19 @@ export const connectAgentWS = (prompt: string) => {
               });
             }, 1000);
 
-            if (wasRegenerating) {
-              store.appendMessage({
-                sender: 'system',
-                text: 'Draft regenerated successfully.',
-              });
-            }
+            // Add a system message indicating what step output is ready for approval
+            const stepLabel = approvalData.agent_step
+              ? approvalData.agent_step.replace(/_/g, ' ').toLowerCase()
+              : 'step';
+            store.appendMessage({
+              sender: 'system',
+              text: `📋 ${stepLabel} completed. Review output below and approve or reject.`,
+            });
 
             store.appendMessage({
               sender: 'agent',
-              text: wasRegenerating
-                ? `Refined Draft:\n${approvalData.draft_message}`
-                : `Initial Draft:\n${approvalData.draft_message}`,
+              text: approvalData.step_data ?? approvalData.draft_message,
+              agent_step: approvalData.agent_step,
             });
             break;
 
@@ -131,6 +134,8 @@ export const connectAgentWS = (prompt: string) => {
             store.setIsAwaitingApproval(false);
             store.setIsRegenerating(false);
             store.setTimeoutCountdown(null);
+            store.setCurrentPendingStep(null);
+            store.setCurrentStepData(null);
 
             const completedData = data as import('../types/websocket').TaskCompletedEvent;
             if (completedData.final_response) {
@@ -155,6 +160,8 @@ export const connectAgentWS = (prompt: string) => {
             store.setIsRegenerating(false);
             store.setTimeoutCountdown(null);
             store.setDraftMessage(null);
+            store.setCurrentPendingStep(null);
+            store.setCurrentStepData(null);
             
             const isTimeout = message.toLowerCase().includes('timeout');
             store.setCancellationReason(isTimeout ? 'timeout' : 'user');
@@ -174,6 +181,8 @@ export const connectAgentWS = (prompt: string) => {
             store.setIsAwaitingApproval(false);
             store.setIsRegenerating(false);
             store.setTimeoutCountdown(null);
+            store.setCurrentPendingStep(null);
+            store.setCurrentStepData(null);
             store.setError(errorData.message);
             store.appendMessage({
               sender: 'system',

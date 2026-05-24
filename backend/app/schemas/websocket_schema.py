@@ -21,11 +21,13 @@ class StatusUpdateEvent(BaseWebSocketEvent):
 
 class ApprovalRequiredEvent(BaseWebSocketEvent):
     """
-    Event sent when the agent requires human intervention/approval.
+    Event sent when the agent requires human intervention/approval for a specific step.
     """
     event_type: WebSocketEventType = WebSocketEventType.APPROVAL_REQUIRED
     task_state: TaskState
+    agent_step: AgentStep
     draft_message: str
+    step_data: Optional[str] = None
     message: str
     approval_timeout_seconds: Optional[int] = None
 

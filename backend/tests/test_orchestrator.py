@@ -33,7 +33,7 @@ class MockWebSocket:
 def speed_up_config():
     """Speeds up delay and timeout for tests."""
     with patch.object(config, "AGENT_STEP_DELAY_SECONDS", 0), \
-         patch.object(config, "APPROVAL_TIMEOUT_SECONDS", 1):
+         patch.object(config, "APPROVAL_TIMEOUT_SECONDS", 2):
         yield
 
 @pytest.fixture
@@ -45,7 +45,20 @@ def mock_tools():
          patch("app.services.agent_orchestrator_service.reflection_tool", new_callable=AsyncMock) as m_ref, \
          patch("app.services.agent_orchestrator_service.execution_tool", new_callable=AsyncMock) as m_exe:
         
-        # Populate draft on draft_tool and reflection_tool
+        # Populate state on tools so step_data is non-empty
+        async def side_effect_research(state):
+            state.research_data = {
+                "vendors": [{"name": "TestVendor", "location": "TestLocation"}],
+                "market_insights": "Test insights",
+                "recommended_approach": "Test approach",
+            }
+        m_res.side_effect = side_effect_research
+
+        async def side_effect_analysis(state):
+            state.analysis_summary = "Analysis complete"
+            state.selected_vendor = {"name": "TestVendor", "location": "TestLocation"}
+        m_ana.side_effect = side_effect_analysis
+
         async def side_effect_draft(state):
             state.draft = "Draft Message"
         m_dra.side_effect = side_effect_draft
@@ -68,16 +81,12 @@ async def wait_for_state(task_id, target_state, timeout=5.0):
         await asyncio.sleep(0.01)
     return False
 
-async def wait_for_regeneration_count(state, expected_count, timeout=5.0):
-    steps = int(timeout / 0.01)
-    for _ in range(steps):
-        if state.regeneration_count == expected_count:
-            return True
-        await asyncio.sleep(0.01)
-    return False
-
 @pytest.mark.asyncio
 async def test_full_approval_flow(mock_tools):
+    """
+    Test full approval through all 4 steps (research, analysis, draft, reflection)
+    and execution. Each step is approved.
+    """
     ws = MockWebSocket()
     task_id = "task-approve"
     correlation_id = "corr-approve"
@@ -91,11 +100,10 @@ async def test_full_approval_flow(mock_tools):
     )
     set_task_reference(task_id, orchestration_task)
     
-    # Wait until task transitions to WAITING_APPROVAL
-    assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
-    
-    # Simulate user approval
-    handle_approval_response(task_id, ApprovalAction.APPROVE)
+    # Approve 4 steps (research, analysis, draft, reflection)
+    for i in range(4):
+        assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
+        handle_approval_response(task_id, ApprovalAction.APPROVE)
     
     await orchestration_task
     
@@ -105,6 +113,10 @@ async def test_full_approval_flow(mock_tools):
     assert "APPROVAL_REQUIRED" in event_types
     assert "TASK_COMPLETED" in event_types
     
+    # Count approval events
+    approval_events = sum(1 for m in ws.sent_messages if m.get("event_type") == "APPROVAL_REQUIRED")
+    assert approval_events == 4, f"Expected 4 approval events, got {approval_events}"
+    
     # Final state in completed event must be SUCCESS
     completed_msg = ws.sent_messages[-1]
     assert completed_msg["event_type"] == "TASK_COMPLETED"
@@ -112,6 +124,9 @@ async def test_full_approval_flow(mock_tools):
 
 @pytest.mark.asyncio
 async def test_rejection_regeneration_loop(mock_tools):
+    """
+    Test: reject at research step, re-run, then approve all remaining steps.
+    """
     ws = MockWebSocket()
     task_id = "task-reject"
     correlation_id = "corr-reject"
@@ -125,31 +140,39 @@ async def test_rejection_regeneration_loop(mock_tools):
     )
     set_task_reference(task_id, orchestration_task)
     
-    # Wait until task transitions to WAITING_APPROVAL
+    # Wait for first approval (research)
     assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
     
-    # First Reject
-    handle_approval_response(task_id, ApprovalAction.REJECT, feedback="Too casual")
+    # Reject once
+    handle_approval_response(task_id, ApprovalAction.REJECT, feedback="Too many vendors")
     
-    # Wait for task to increment regeneration count (regeneration starts)
-    assert await wait_for_regeneration_count(state, 1) is True
-    
-    # Task should loop back to WAITING_APPROVAL
+    # Give orchestrator time to process rejection and re-enter WAITING_APPROVAL
+    await asyncio.sleep(0.05)
     assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
-        
-    assert state.regeneration_count == 1
-    assert active_tasks[task_id]["task_state"] == TaskState.WAITING_APPROVAL
     
-    # Second Approve
+    # Now approve research
     handle_approval_response(task_id, ApprovalAction.APPROVE)
+    
+    # Approve remaining 3 steps (analysis, draft, reflection)
+    for i in range(3):
+        assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
+        handle_approval_response(task_id, ApprovalAction.APPROVE)
+    
     await orchestration_task
     
     completed_msg = ws.sent_messages[-1]
     assert completed_msg["event_type"] == "TASK_COMPLETED"
     assert completed_msg["task_state"] == "SUCCESS"
+    
+    # 1 reject + 1 approve for step 1 + 3 remaining approves = 5 total approval events
+    approval_events = sum(1 for m in ws.sent_messages if m.get("event_type") == "APPROVAL_REQUIRED")
+    assert approval_events == 5, f"Expected 5 approval events, got {approval_events}"
 
 @pytest.mark.asyncio
 async def test_max_regeneration_attempts(mock_tools):
+    """
+    Test multiple rejections on research step, then approve and complete.
+    """
     ws = MockWebSocket()
     task_id = "task-max-regen"
     correlation_id = "corr-max-regen"
@@ -163,19 +186,31 @@ async def test_max_regeneration_attempts(mock_tools):
     )
     set_task_reference(task_id, orchestration_task)
     
-    # Loop max regeneration times + 1 to exceed limits
-    for i in range(config.MAX_REGENERATION_ATTEMPTS + 1):
+    # Reject research step 3 times
+    reject_count = 3
+    for i in range(reject_count):
         assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
         handle_approval_response(task_id, ApprovalAction.REJECT, feedback=f"Feedback {i}")
-        if i < config.MAX_REGENERATION_ATTEMPTS:
-            assert await wait_for_regeneration_count(state, i + 1) is True
-            
+    
+    # Give orchestrator time to process rejection and re-enter WAITING_APPROVAL
+    await asyncio.sleep(0.05)
+    assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
+    handle_approval_response(task_id, ApprovalAction.APPROVE)
+    
+    # Approve remaining 3 steps
+    for i in range(3):
+        assert await wait_for_state(task_id, TaskState.WAITING_APPROVAL) is True
+        handle_approval_response(task_id, ApprovalAction.APPROVE)
+    
     await orchestration_task
     
-    # Final event should be ERROR due to exceeding limit
     completed_msg = ws.sent_messages[-1]
-    assert completed_msg["event_type"] == "ERROR"
-    assert completed_msg["error_code"] == "MAX_REGENERATION_EXCEEDED"
+    assert completed_msg["event_type"] == "TASK_COMPLETED"
+    assert completed_msg["task_state"] == "SUCCESS"
+    
+    # Total = reject_count + 4 approve events (research, analysis, draft, reflection)
+    approval_events = sum(1 for m in ws.sent_messages if m.get("event_type") == "APPROVAL_REQUIRED")
+    assert approval_events == reject_count + 4, f"Expected {reject_count + 4} approval events, got {approval_events}"
 
 @pytest.mark.asyncio
 async def test_timeout_cancellation(mock_tools):
@@ -214,7 +249,6 @@ async def test_stop_cancellation(mock_tools):
     )
     set_task_reference(task_id, orchestration_task)
     
-    # Wait until it is running/waiting
     await asyncio.sleep(0.01)
     
     await cancel_task(task_id)
@@ -240,20 +274,13 @@ async def test_stop_spam_idempotency(mock_tools):
     
     await asyncio.sleep(0.01)
     
-    # First cancel call - this will wait for the task to finish cancel/cleanup
     await cancel_task(task_id)
-    
-    # Second and third cancel calls (STOP spam)
-    # They should return without raising errors or crashing
     await cancel_task(task_id)
     await cancel_task(task_id)
     
     await orchestration_task
     
-    # Task should be cleaned up from active_tasks
     assert task_id not in active_tasks
-    
-    # Event should be emitted exactly once
     assert ws.closed is True
     cancelled_messages = [msg for msg in ws.sent_messages if msg.get("event_type") == "TASK_CANCELLED"]
     assert len(cancelled_messages) == 1

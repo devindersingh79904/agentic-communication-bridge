@@ -23,6 +23,10 @@ interface AgentState {
   backendSteps: AgentStep[];
   cancellationReason: string | null;
 
+  // Multi-step approval fields
+  currentPendingStep: AgentStep | null;
+  currentStepData: string | null;
+
   // Actions
   setHostUrl: (url: string) => void;
   setSocket: (socket: WebSocket | null) => void;
@@ -40,6 +44,8 @@ interface AgentState {
   setIds: (taskId: string | null, correlationId: string | null) => void;
   setCancellationReason: (reason: string | null) => void;
   fetchMetadataEnums: () => Promise<void>;
+  setCurrentPendingStep: (step: AgentStep | null) => void;
+  setCurrentStepData: (data: string | null) => void;
 
   // Web socket controller actions
   connectWebSocket: (prompt: string) => void;
@@ -67,6 +73,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   correlationId: null,
   backendSteps: [],
   cancellationReason: null,
+  currentPendingStep: null,
+  currentStepData: null,
+
+  setCurrentPendingStep: (currentPendingStep) => set({ currentPendingStep }),
+  setCurrentStepData: (currentStepData) => set({ currentStepData }),
 
   setHostUrl: (hostUrl) => set({ hostUrl }),
   setSocket: (socket) => set({ socket }),
@@ -160,20 +171,30 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const { socket, taskId, correlationId } = get();
     set({ isAwaitingApproval: false });
     
+    // Build display message based on action
+    const feedbackMessage = feedback && feedback.trim() ? feedback.trim() : '';
+    
     if (action === 'APPROVE') {
-      get().appendMessage({
-        sender: 'system',
-        text: 'You approved the draft.',
-      });
+      if (feedbackMessage) {
+        get().appendMessage({
+          sender: 'system',
+          text: `You approved with feedback: "${feedbackMessage}"`,
+        });
+      } else {
+        get().appendMessage({
+          sender: 'system',
+          text: 'You approved. Proceeding to next step.',
+        });
+      }
     } else if (action === 'REJECT') {
       get().appendMessage({
         sender: 'system',
-        text: 'You rejected the draft and requested regeneration.',
+        text: 'You rejected and requested regeneration.',
       });
-      if (feedback && feedback.trim()) {
+      if (feedbackMessage) {
         get().appendMessage({
           sender: 'system',
-          text: `Feedback: "${feedback.trim()}"`,
+          text: `Feedback: "${feedbackMessage}"`,
         });
       }
       set({ isRegenerating: true });
@@ -184,7 +205,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         JSON.stringify({
           event_type: CLIENT_EVENTS.APPROVAL_RESPONSE,
           action,
-          feedback,
+          feedback: feedbackMessage || undefined,
           task_id: taskId,
           correlation_id: correlationId,
         })
@@ -239,6 +260,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       correlationId: null,
       backendSteps: [],
       cancellationReason: null,
+      currentPendingStep: null,
+      currentStepData: null,
     }));
   },
 }));

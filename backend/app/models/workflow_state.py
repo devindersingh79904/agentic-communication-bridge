@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Optional
-from app.core.enums import ApprovalAction
+from typing import Optional, Any
+from app.core.enums import ApprovalAction, AgentStep
 
 @dataclass
 class WorkflowState:
@@ -32,3 +32,8 @@ class WorkflowState:
     regeneration_count: int = 0
     rejection_feedback: Optional[str] = None
     approval_action: Optional[ApprovalAction] = None
+
+    # Multi-step approval tracking: which step the orchestrator is currently
+    # paused on awaiting approval and the data produced by that step.
+    pending_agent_step: Optional[AgentStep] = None
+    pending_step_data: Optional[str] = None

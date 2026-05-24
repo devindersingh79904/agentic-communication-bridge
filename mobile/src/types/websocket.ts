@@ -33,7 +33,9 @@ export interface StatusUpdateEvent extends BaseWebSocketEvent {
 export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
   event_type: 'APPROVAL_REQUIRED';
   task_state: 'WAITING_APPROVAL';
+  agent_step: AgentStep;
   draft_message: string;
+  step_data?: string;
   message: string;
   approval_timeout_seconds?: number;
 }
