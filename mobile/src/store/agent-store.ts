@@ -168,33 +168,37 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   sendApprovalResponse: (action, feedback) => {
-    const { socket, taskId, correlationId } = get();
+    const { socket, taskId, correlationId, currentPendingStep } = get();
     set({ isAwaitingApproval: false });
-    
-    // Build display message based on action
+
     const feedbackMessage = feedback && feedback.trim() ? feedback.trim() : '';
-    
+    const stepLabel = currentPendingStep
+      ? currentPendingStep.replace(/_/g, ' ').toLowerCase()
+      : 'step';
+
     if (action === 'APPROVE') {
       if (feedbackMessage) {
+        // Show user's approval + feedback as a chat bubble
         get().appendMessage({
-          sender: 'system',
-          text: `You approved with feedback: "${feedbackMessage}"`,
+          sender: 'user',
+          text: `✅ Approved ${stepLabel} with feedback: "${feedbackMessage}"`,
         });
       } else {
         get().appendMessage({
-          sender: 'system',
-          text: 'You approved. Proceeding to next step.',
+          sender: 'user',
+          text: `✅ Approved ${stepLabel}. Proceeding.`,
         });
       }
     } else if (action === 'REJECT') {
-      get().appendMessage({
-        sender: 'system',
-        text: 'You rejected and requested regeneration.',
-      });
       if (feedbackMessage) {
         get().appendMessage({
-          sender: 'system',
-          text: `Feedback: "${feedbackMessage}"`,
+          sender: 'user',
+          text: `❌ Rejected ${stepLabel}. Feedback: "${feedbackMessage}"`,
+        });
+      } else {
+        get().appendMessage({
+          sender: 'user',
+          text: `❌ Rejected ${stepLabel}. Re-running.`,
         });
       }
       set({ isRegenerating: true });

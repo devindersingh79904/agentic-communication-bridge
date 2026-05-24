@@ -16,16 +16,12 @@ import { Message, AgentStep } from '../types/websocket';
 const DEFAULT_STEPS = [
   { id: 'SEARCHING_VENDORS', label: 'Searching Vendors' },
   { id: 'ANALYZING_PRICING', label: 'Analyzing Pricing' },
-  { id: 'DRAFTING_OUTREACH', label: 'Drafting Outreach' },
-  { id: 'SELF_REFLECTION', label: 'Self Reflection' },
   { id: 'EXECUTING', label: 'Executing' },
 ];
 
 const STEP_LABELS: Record<string, string> = {
   SEARCHING_VENDORS: 'Vendor Research',
   ANALYZING_PRICING: 'Pricing Analysis',
-  DRAFTING_OUTREACH: 'Outreach Draft',
-  SELF_REFLECTION: 'Self Reflection',
   EXECUTING: 'Execution',
 };
 

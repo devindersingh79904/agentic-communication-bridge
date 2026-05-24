@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 
 from app.core import config
 from app.core.logger import get_logger
+from app.utils.retry import retry_with_backoff
 
 logger = get_logger("services.llm")
 
@@ -107,6 +108,7 @@ def _log_usage(step_name: str, response) -> None:
 # Shared helper: safe LLM chat completion call
 # ---------------------------------------------------------------------------
 
+@retry_with_backoff()
 async def _llm_call(
     step_name: str,
     system_prompt: str,

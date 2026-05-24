@@ -7,6 +7,8 @@ class TaskState(str, Enum):
     """
     SCHEDULED = "SCHEDULED"
     RUNNING = "RUNNING"
+    EXTERNAL_SEARCHING = "EXTERNAL_SEARCHING"
+    FAILED_RETRYING = "FAILED_RETRYING"
     WAITING_APPROVAL = "WAITING_APPROVAL"
     EXECUTING = "EXECUTING"
     SUCCESS = "SUCCESS"
@@ -26,6 +28,8 @@ class WebSocketEventType(str, Enum):
     TASK_COMPLETED = "TASK_COMPLETED"
     TASK_CANCELLED = "TASK_CANCELLED"
     ERROR = "ERROR"
+    PING = "PING"
+    PONG = "PONG"
 
 class ApprovalAction(str, Enum):
     """
@@ -34,6 +38,7 @@ class ApprovalAction(str, Enum):
     """
     APPROVE = "APPROVE"
     REJECT = "REJECT"
+    MODIFY_REQUEST = "MODIFY_REQUEST"
 
 class AgentStep(str, Enum):
     """

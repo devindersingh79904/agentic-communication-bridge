@@ -20,6 +20,7 @@ from app.tools.analysis_tool import analysis_tool
 from app.tools.draft_tool import draft_tool
 from app.tools.reflection_tool import reflection_tool
 from app.tools.execution_tool import execution_tool
+from app.repositories.task_repository import task_repo
 
 logger = get_logger("services.agent_orchestrator")
 
@@ -39,6 +40,20 @@ VALID_TRANSITIONS = {
     TaskState.RUNNING: {
         TaskState.WAITING_APPROVAL,
         TaskState.EXECUTING,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.EXTERNAL_SEARCHING: {
+        TaskState.RUNNING,
+        TaskState.WAITING_APPROVAL,
+        TaskState.FAILED,
+        TaskState.CANCELLED
+    },
+    TaskState.FAILED_RETRYING: {
+        TaskState.RUNNING,
+        TaskState.EXTERNAL_SEARCHING,
         TaskState.FAILED,
         TaskState.CANCELLED
     },
@@ -91,7 +106,7 @@ def is_websocket_active(websocket: WebSocket) -> bool:
                 return True
     return False
 
-async def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Event) -> None:
+async def register_task(task_id: str, websocket: WebSocket, approval_event: asyncio.Event, correlation_id: str = "") -> None:
     """
     Registers a new active WebSocket task session in the registry in SCHEDULED state.
     """
@@ -103,7 +118,10 @@ async def register_task(task_id: str, websocket: WebSocket, approval_event: asyn
             "task_state": TaskState.SCHEDULED,
             "cancelled": False,
             "terminal_emitted": False,
-            "workflow_state": None
+            "workflow_state": None,
+            "correlation_id": correlation_id,
+            "terminal_lock": asyncio.Lock(),
+            "last_activity_time": asyncio.get_event_loop().time()
         }
     logger.info("Orchestration task registered in registry")
 
@@ -194,6 +212,7 @@ async def safe_send_json(websocket: WebSocket, payload: dict) -> None:
 async def send_terminal_event(websocket: WebSocket, task_id: str, event: Any) -> None:
     """
     Sends a terminal event ensuring it's emitted only once, and closes the WebSocket connection.
+    Protected under the task's terminal lock.
     """
     task_info = active_tasks.get(task_id)
     if not task_info:
@@ -204,24 +223,77 @@ async def send_terminal_event(websocket: WebSocket, task_id: str, event: Any) ->
             pass
         return
         
-    if task_info.get("terminal_emitted"):
-        logger.warning(
-            "Prevented duplicate terminal event emission for task %s (event: %s)",
-            task_id, event.event_type
-        )
+    terminal_lock = task_info.get("terminal_lock")
+    if terminal_lock:
+        async with terminal_lock:
+            if task_info.get("terminal_emitted"):
+                return
+            task_info["terminal_emitted"] = True
+            await safe_send_json(websocket, event.model_dump())
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+    else:
+        if task_info.get("terminal_emitted"):
+            return
+        task_info["terminal_emitted"] = True
+        await safe_send_json(websocket, event.model_dump())
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+async def cancel_task(task_id: str) -> None:
+    """
+    Cancels the active task and interrupts the background orchestration task.
+    """
+    task_info = active_tasks.get(task_id)
+    if not task_info:
         return
         
-    task_info["terminal_emitted"] = True
-    await safe_send_json(websocket, event.model_dump())
-    try:
-        await websocket.close()
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Step approval helper
-# ---------------------------------------------------------------------------
+    terminal_lock = task_info.get("terminal_lock")
+    if terminal_lock:
+        async with terminal_lock:
+            if task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                return
+            old_state = task_info.get("task_state")
+            if not transition_task_state(task_id, TaskState.CANCELLED):
+                logger.debug("Task state transition to CANCELLED failed or already terminal")
+                return
+            task_info["cancelled"] = True
+            task_repo.update_task_status(task_id, old_state, TaskState.CANCELLED)
+            
+            # Emit cancellation event to client
+            websocket = task_info.get("websocket")
+            if websocket:
+                correlation_id = task_info.get("correlation_id", "")
+                cancelled_event = TaskCancelledEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.CANCELLED,
+                    message="Orchestration cancelled by client."
+                )
+                task_info["terminal_emitted"] = True
+                await safe_send_json(websocket, cancelled_event.model_dump())
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+    else:
+        if task_info.get("task_state") == TaskState.CANCELLED:
+            return
+        old_state = task_info.get("task_state")
+        if not transition_task_state(task_id, TaskState.CANCELLED):
+            return
+        task_info["cancelled"] = True
+        task_repo.update_task_status(task_id, old_state, TaskState.CANCELLED)
+        
+    asyncio_task = task_info.get("task")
+    if asyncio_task and not asyncio_task.done():
+        logger.info("Orchestration cancelled")
+        asyncio_task.cancel()
+        await asyncio.gather(asyncio_task, return_exceptions=True)
 
 async def _await_step_approval(
     websocket: WebSocket,
@@ -234,20 +306,22 @@ async def _await_step_approval(
 ) -> bool:
     """
     Pauses the workflow and waits for human approval of a step's output.
-    Returns True if APPROVED, False if REJECTED (for retry).
+    Returns True if APPROVED, False if REJECTED or MODIFY_REQUEST (for retry/regeneration).
     Raises asyncio.TimeoutError on timeout, cancels on cancellation.
     """
     state.pending_agent_step = agent_step
     state.pending_step_data = step_data
 
-    if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
-        logger.warning("Aborting: failed to transition to WAITING_APPROVAL for step %s", agent_step)
-        return False
-
     task_info = active_tasks.get(task_id)
     if not task_info:
         logger.warning("Task %s removed during step approval (aborting)", task_id)
         return False
+        
+    old_state = task_info.get("task_state")
+    if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
+        logger.warning("Aborting: failed to transition to WAITING_APPROVAL for step %s", agent_step)
+        return False
+    task_repo.update_task_status(task_id, old_state, TaskState.WAITING_APPROVAL)
 
     approval_event = task_info.get("approval_event")
     if not approval_event:
@@ -263,6 +337,7 @@ async def _await_step_approval(
         step_data=step_data,
         message=message,
         approval_timeout_seconds=config.APPROVAL_TIMEOUT_SECONDS,
+        reflection_metadata=state.reflection_metadata if agent_step == AgentStep.SELF_REFLECTION else None
     )
     await safe_send_json(websocket, app_req_event.model_dump())
 
@@ -272,17 +347,25 @@ async def _await_step_approval(
         await asyncio.wait_for(approval_event.wait(), timeout=config.APPROVAL_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         logger.warning("Approval timeout exceeded for step %s. Task cancelled automatically.", agent_step)
-        if transition_task_state(task_id, TaskState.CANCELLED):
-            task_info = active_tasks.get(task_id)
-            if task_info:
+        
+        async with task_info["terminal_lock"]:
+            if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                transition_task_state(task_id, TaskState.CANCELLED)
                 task_info["cancelled"] = True
-            cancelled_event = TaskCancelledEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.CANCELLED,
-                message=f"Approval timeout exceeded at step {agent_step.value}. Task cancelled automatically.",
-            )
-            await send_terminal_event(websocket, task_id, cancelled_event)
+                task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.CANCELLED)
+                
+                cancelled_event = TaskCancelledEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.CANCELLED,
+                    message=f"Approval timeout exceeded at step {agent_step.value}. Task cancelled automatically.",
+                )
+                task_info["terminal_emitted"] = True
+                await safe_send_json(websocket, cancelled_event.model_dump())
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
         raise asyncio.TimeoutError()
 
     # Check if task was cancelled while waiting
@@ -290,215 +373,130 @@ async def _await_step_approval(
     if not task_info or task_info.get("cancelled"):
         raise asyncio.CancelledError()
 
-    if state.approval_action == ApprovalAction.REJECT:
-        logger.info("Step %s rejected with feedback. Re-running step...", agent_step)
-        # Transition back to RUNNING so the step can be re-run
+    # Handle rejection / modification response
+    action = state.approval_action
+    if action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
+        logger.info("Step %s received %s. Re-running step...", agent_step, action.value)
         transition_task_state(task_id, TaskState.RUNNING)
+        task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.RUNNING)
         return False
 
-    # APPROVED — pass feedback to next step if provided, then proceed
+    # APPROVED
     if state.rejection_feedback:
-        logger.info("Step %s approved with feedback. Passing to next step...", agent_step)
+        logger.info("Step %s approved with feedback. Proceeding...", agent_step)
     else:
         logger.info("Step %s approved. Proceeding...", agent_step)
+        
     transition_task_state(task_id, TaskState.RUNNING)
+    task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.RUNNING)
     return True
 
-
-async def _run_step_with_approval(
-    websocket: WebSocket,
-    correlation_id: str,
-    task_id: str,
-    state: WorkflowState,
-    agent_step: AgentStep,
-    step_msg: str,
-    tool_fn,
-    data_extractor,
-) -> Optional[bool]:
+def _extract_vendor_from_feedback(feedback: Optional[str], known_vendors: list) -> Optional[dict]:
     """
-    Runs a tool step, then pauses for approval.
-    If rejected, re-runs the tool. If approved, proceeds.
-    Returns True if approved and should continue, raises on cancellation/timeout.
+    Checks if the user's feedback mentions a specific vendor name from the
+    known vendor list. Returns the matching vendor dict if found, else None.
     """
-    while True:
-        # Check for cancellation
-        if active_tasks.get(task_id, {}).get("cancelled"):
-            raise asyncio.CancelledError()
-
-        logger.info("Entering step: %s", agent_step)
-        status_event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.RUNNING,
-            agent_step=agent_step,
-            message=step_msg,
-        )
-        await safe_send_json(websocket, status_event.model_dump())
-
-        try:
-            await tool_fn(state)
-        except Exception as e:
-            logger.exception("Tool execution failed for step %s", agent_step)
-            if transition_task_state(task_id, TaskState.FAILED):
-                error_event = ErrorEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.FAILED,
-                    error_code="TOOL_EXECUTION_FAILED",
-                    message=(
-                        f"Execution failed at step {agent_step.value}. "
-                        f"Please verify {get_provider_name().capitalize()} configuration and try again."
-                    ),
-                )
-                await send_terminal_event(websocket, task_id, error_event)
-            raise
-
-        # Extract data for approval display
-        step_data = data_extractor(state)
-
-        approved = await _await_step_approval(
-            websocket=websocket,
-            correlation_id=correlation_id,
-            task_id=task_id,
-            state=state,
-            agent_step=agent_step,
-            step_data=step_data,
-            message=step_msg,
-        )
-
-        if approved:
-            state.pending_agent_step = None
-            state.pending_step_data = None
-            return True
-
-        # REJECTED – clear approval action/event and re-run step
-        state.approval_action = None
-        task_info = active_tasks.get(task_id)
-        if task_info:
-            approval_event = task_info.get("approval_event")
-            if approval_event:
-                approval_event.clear()
-
-        # Transition back to RUNNING for re-run
-        if not transition_task_state(task_id, TaskState.RUNNING):
-            raise asyncio.CancelledError()
-
-
-# ---------------------------------------------------------------------------
-# Main orchestration runner
-# ---------------------------------------------------------------------------
+    if not feedback or not known_vendors:
+        return None
+    feedback_lower = feedback.lower()
+    for vendor in known_vendors:
+        vname = vendor.get("vendor_name", "").lower()
+        if vname in feedback_lower:
+            logger.info("User feedback matched vendor '%s' from research list", vendor.get("vendor_name"))
+            return vendor
+    return None
 
 async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: str, state: WorkflowState) -> None:
     """
     Executes the async agent orchestration workflow using shared WorkflowState.
-    Each step pauses for human approval before proceeding.
+    Flow: SEARCHING_VENDORS -> ANALYZING_PRICING -> DRAFTING_OUTREACH -> SELF_REFLECTION -> EXECUTING
+    Each step is evaluated, logged, and awaits approval.
     """
-    # Propagate correlation_id and task_id inside the background task context
     corr_token = set_correlation_id(correlation_id)
     task_token = set_task_id(task_id)
     
-    # Store workflow state in registry for runtime visibility
     task_entry = active_tasks.get(task_id)
     if task_entry:
         task_entry["workflow_state"] = state
-    
+        
     logger.info("Orchestration workflow started with prompt: %.100s", state.prompt)
     
     try:
-        # Transition SCHEDULED -> RUNNING before first tool
+        # Optimistic load recent task memory context
+        try:
+            recent = task_repo.get_recent_successful_tasks(limit=3)
+            if recent:
+                memory_parts = []
+                for t in recent:
+                    memory_parts.append(
+                        f"Prompt: {t['user_prompt']}\nTargeted: {t['memory'].get('vendor_name')}\nOutput: {t['final_output']}"
+                    )
+                state.memory_context = "\n---\n".join(memory_parts)
+                logger.info("Loaded task history context into state.memory_context")
+        except Exception as e:
+            logger.warning("Failed to load task history for memory context: %s", e)
+
+        # Transition SCHEDULED -> RUNNING
         if not transition_task_state(task_id, TaskState.RUNNING):
             logger.warning("Aborting orchestration run: failed to transition task state to RUNNING")
             return
+        task_repo.update_task_status(task_id, TaskState.SCHEDULED, TaskState.RUNNING)
 
         # =====================================================================
         # Step 1: SEARCHING_VENDORS
         # =====================================================================
-        if active_tasks.get(task_id, {}).get("cancelled"):
-            raise asyncio.CancelledError()
+        research_approved = False
+        while not research_approved:
+            if active_tasks.get(task_id, {}).get("cancelled"):
+                raise asyncio.CancelledError()
 
-        logger.info("Entering step: SEARCHING_VENDORS")
-        event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.RUNNING,
-            agent_step=AgentStep.SEARCHING_VENDORS,
-            message="Searching for vendors..."
-        )
-        await safe_send_json(websocket, event.model_dump())
-
-        await research_tool(state)
-
-        research_data_str = ""
-        if state.research_data:
-            vendors = state.research_data.get("vendors", [])
-            market_insights = state.research_data.get("market_insights", "")
-            recommended = state.research_data.get("recommended_approach", "")
-            vendor_list = "\n".join(
-                [f"• {v['name']} ({v['location']})" for v in vendors]
-            ) if vendors else "No vendors found."
-            research_data_str = (
-                f"Vendors Found:\n{vendor_list}\n\n"
-                f"Market Insights: {market_insights}\n\n"
-                f"Recommended Approach: {recommended}"
+            logger.info("Entering step: SEARCHING_VENDORS")
+            event = StatusUpdateEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.RUNNING,
+                agent_step=AgentStep.SEARCHING_VENDORS,
+                message="Searching local database and online catalogs..."
             )
+            await safe_send_json(websocket, event.model_dump())
 
-        if not await _await_step_approval(
-            websocket=websocket,
-            correlation_id=correlation_id,
-            task_id=task_id,
-            state=state,
-            agent_step=AgentStep.SEARCHING_VENDORS,
-            step_data=research_data_str,
-            message="Vendor search completed. Review findings and approve to continue.",
-        ):
-            # REJECTED – re-run research step
-            continue_research = True
-            while continue_research:
-                if active_tasks.get(task_id, {}).get("cancelled"):
-                    raise asyncio.CancelledError()
-                # Clear and re-run
-                state.approval_action = None
-                task_info = active_tasks.get(task_id)
-                if task_info:
-                    ae = task_info.get("approval_event")
-                    if ae:
-                        ae.clear()
-
-                logger.info("Re-running step: SEARCHING_VENDORS")
-                event = StatusUpdateEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.RUNNING,
-                    agent_step=AgentStep.SEARCHING_VENDORS,
-                    message="Re-searching vendors based on feedback..."
-                )
-                await safe_send_json(websocket, event.model_dump())
-
+            # Call tool with transient retry state logging
+            try:
+                await research_tool(state)
+            except Exception as e:
+                logger.warning("Research tool failed, entering retry state...")
+                transition_task_state(task_id, TaskState.FAILED_RETRYING)
+                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
+                await asyncio.sleep(2.0)
+                transition_task_state(task_id, TaskState.RUNNING)
+                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
                 await research_tool(state)
 
-                research_data_str = ""
-                if state.research_data:
-                    vendors = state.research_data.get("vendors", [])
-                    market_insights = state.research_data.get("market_insights", "")
-                    recommended = state.research_data.get("recommended_approach", "")
-                    vendor_list = "\n".join(
-                        [f"• {v['name']} ({v['location']})" for v in vendors]
-                    ) if vendors else "No vendors found."
-                    research_data_str = (
-                        f"Vendors Found:\n{vendor_list}\n\n"
-                        f"Market Insights: {market_insights}\n\n"
-                        f"Recommended Approach: {recommended}"
-                    )
-
-                continue_research = not await _await_step_approval(
-                    websocket=websocket,
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    state=state,
-                    agent_step=AgentStep.SEARCHING_VENDORS,
-                    step_data=research_data_str,
-                    message="Vendor search completed. Review findings and approve to continue.",
+            research_data_str = ""
+            if state.research_data:
+                vendors = state.research_data.get("vendors", [])
+                market_insights = state.research_data.get("market_insights", "")
+                vendor_list = "\n".join(
+                    [f"• {v.get('vendor_name') or v.get('name', 'Unknown')} (Rating: {v.get('rating', 'N/A')}, Location: {v.get('location', 'N/A')})" for v in vendors]
+                ) if vendors else "No vendors found."
+                research_data_str = (
+                    f"Vendors Discovered:\n{vendor_list}\n\n"
+                    f"Market Insights: {market_insights}"
                 )
+
+            research_approved = await _await_step_approval(
+                websocket=websocket,
+                correlation_id=correlation_id,
+                task_id=task_id,
+                state=state,
+                agent_step=AgentStep.SEARCHING_VENDORS,
+                step_data=research_data_str,
+                message="Vendor discovery complete. Review candidates and approve to analyze pricing.",
+            )
+            
+            # Reset feedback
+            if not research_approved:
+                state.rejection_feedback = None
 
         state.pending_agent_step = None
         state.pending_step_data = None
@@ -506,70 +504,71 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         # =====================================================================
         # Step 2: ANALYZING_PRICING
         # =====================================================================
-        if active_tasks.get(task_id, {}).get("cancelled"):
-            raise asyncio.CancelledError()
+        analysis_approved = False
+        while not analysis_approved:
+            if active_tasks.get(task_id, {}).get("cancelled"):
+                raise asyncio.CancelledError()
 
-        logger.info("Entering step: ANALYZING_PRICING")
-        event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.RUNNING,
-            agent_step=AgentStep.ANALYZING_PRICING,
-            message="Analyzing pricing..."
-        )
-        await safe_send_json(websocket, event.model_dump())
+            logger.info("Entering step: ANALYZING_PRICING")
+            event = StatusUpdateEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.RUNNING,
+                agent_step=AgentStep.ANALYZING_PRICING,
+                message="Analyzing catalogs and pricing..."
+            )
+            await safe_send_json(websocket, event.model_dump())
 
-        await analysis_tool(state)
-
-        analysis_str = state.analysis_summary or "Analysis completed."
-        if state.selected_vendor:
-            analysis_str += f"\n\nSelected Vendor: {state.selected_vendor['name']} ({state.selected_vendor['location']})"
-
-        if not await _await_step_approval(
-            websocket=websocket,
-            correlation_id=correlation_id,
-            task_id=task_id,
-            state=state,
-            agent_step=AgentStep.ANALYZING_PRICING,
-            step_data=analysis_str,
-            message="Pricing analysis completed. Review and approve to proceed to drafting.",
-        ):
-            continue_analysis = True
-            while continue_analysis:
-                if active_tasks.get(task_id, {}).get("cancelled"):
-                    raise asyncio.CancelledError()
-                state.approval_action = None
-                task_info = active_tasks.get(task_id)
-                if task_info:
-                    ae = task_info.get("approval_event")
-                    if ae:
-                        ae.clear()
-
-                logger.info("Re-running step: ANALYZING_PRICING")
-                event = StatusUpdateEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.RUNNING,
-                    agent_step=AgentStep.ANALYZING_PRICING,
-                    message="Re-analyzing pricing based on feedback..."
-                )
-                await safe_send_json(websocket, event.model_dump())
-
+            try:
+                await analysis_tool(state)
+            except Exception as e:
+                logger.warning("Analysis tool failed, retrying...")
+                transition_task_state(task_id, TaskState.FAILED_RETRYING)
+                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
+                await asyncio.sleep(2.0)
+                transition_task_state(task_id, TaskState.RUNNING)
+                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
                 await analysis_tool(state)
 
-                analysis_str = state.analysis_summary or "Analysis completed."
-                if state.selected_vendor:
-                    analysis_str += f"\n\nSelected Vendor: {state.selected_vendor['name']} ({state.selected_vendor['location']})"
+            analysis_str = state.analysis_summary or "Analysis completed."
+            if state.selected_vendor:
+                analysis_str += f"\n\nSelected Vendor: {state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name', 'Unknown')} ({state.selected_vendor.get('location', 'N/A')})"
 
-                continue_analysis = not await _await_step_approval(
-                    websocket=websocket,
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    state=state,
-                    agent_step=AgentStep.ANALYZING_PRICING,
-                    step_data=analysis_str,
-                    message="Pricing analysis completed. Review and approve to proceed to drafting.",
-                )
+            analysis_approved = await _await_step_approval(
+                websocket=websocket,
+                correlation_id=correlation_id,
+                task_id=task_id,
+                state=state,
+                agent_step=AgentStep.ANALYZING_PRICING,
+                step_data=analysis_str,
+                message="Pricing analysis complete. Approve to generate outreach draft, or reject to adjust criteria.",
+            )
+
+            if not analysis_approved:
+                # Support forcing a specific vendor from user feedback
+                vendors = state.research_data.get("vendors", []) if state.research_data else []
+                matching_vendor = _extract_vendor_from_feedback(state.rejection_feedback, vendors)
+
+                if matching_vendor:
+                    logger.info("User requested vendor focus: '%s'. Re-running research...", matching_vendor.get("vendor_name") or matching_vendor.get("name", "Unknown"))
+                    state.selected_vendor = matching_vendor
+                    state.rejection_feedback = None
+                    # Clear approval event
+                    task_info = active_tasks.get(task_id)
+                    if task_info:
+                        ae = task_info.get("approval_event")
+                        if ae:
+                            ae.clear()
+                    # Re-run research focusing on preference
+                    await research_tool(state)
+                    await analysis_tool(state)
+                else:
+                    state.approval_action = None
+                    task_info = active_tasks.get(task_id)
+                    if task_info:
+                        ae = task_info.get("approval_event")
+                        if ae:
+                            ae.clear()
 
         state.pending_agent_step = None
         state.pending_step_data = None
@@ -577,94 +576,52 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         # =====================================================================
         # Step 3: DRAFTING_OUTREACH
         # =====================================================================
-        if active_tasks.get(task_id, {}).get("cancelled"):
-            raise asyncio.CancelledError()
+        draft_approved = False
+        while not draft_approved:
+            if active_tasks.get(task_id, {}).get("cancelled"):
+                raise asyncio.CancelledError()
 
-        logger.info("Entering step: DRAFTING_OUTREACH")
-        event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.RUNNING,
-            agent_step=AgentStep.DRAFTING_OUTREACH,
-            message="Drafting outreach..."
-        )
-        await safe_send_json(websocket, event.model_dump())
+            logger.info("Entering step: DRAFTING_OUTREACH")
+            event = StatusUpdateEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.RUNNING,
+                agent_step=AgentStep.DRAFTING_OUTREACH,
+                message="Drafting outreach communication..."
+            )
+            await safe_send_json(websocket, event.model_dump())
 
-        try:
-            await draft_tool(state)
-        except Exception as e:
-            logger.exception("Draft generation failed")
-            if transition_task_state(task_id, TaskState.FAILED):
-                error_event = ErrorEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.FAILED,
-                    error_code="LLM_EXECUTION_FAILED",
-                    message=(
-                        f"AI outreach generation failed. "
-                        f"Please verify {get_provider_name().capitalize()} configuration and try again."
-                    )
-                )
-                await send_terminal_event(websocket, task_id, error_event)
-            return
+            try:
+                await draft_tool(state)
+            except Exception as e:
+                logger.warning("Draft tool failed, retrying...")
+                transition_task_state(task_id, TaskState.FAILED_RETRYING)
+                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
+                await asyncio.sleep(2.0)
+                transition_task_state(task_id, TaskState.RUNNING)
+                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
+                await draft_tool(state)
 
-        draft_str = state.draft or ""
+            draft_str = state.draft or "Draft completed."
 
-        if not await _await_step_approval(
-            websocket=websocket,
-            correlation_id=correlation_id,
-            task_id=task_id,
-            state=state,
-            agent_step=AgentStep.DRAFTING_OUTREACH,
-            step_data=draft_str,
-            message="Outreach draft generated. Review and approve to continue to self-reflection.",
-        ):
-            continue_draft = True
-            while continue_draft:
-                if active_tasks.get(task_id, {}).get("cancelled"):
-                    raise asyncio.CancelledError()
+            draft_approved = await _await_step_approval(
+                websocket=websocket,
+                correlation_id=correlation_id,
+                task_id=task_id,
+                state=state,
+                agent_step=AgentStep.DRAFTING_OUTREACH,
+                step_data=draft_str,
+                message="Outreach draft generated. Approve to run self-reflection audit, or modify.",
+            )
+            
+            if not draft_approved:
+                # Capture modification instructions
                 state.approval_action = None
                 task_info = active_tasks.get(task_id)
                 if task_info:
                     ae = task_info.get("approval_event")
                     if ae:
                         ae.clear()
-
-                logger.info("Re-running step: DRAFTING_OUTREACH")
-                event = StatusUpdateEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.RUNNING,
-                    agent_step=AgentStep.DRAFTING_OUTREACH,
-                    message="Re-drafting outreach based on feedback..."
-                )
-                await safe_send_json(websocket, event.model_dump())
-
-                try:
-                    await draft_tool(state)
-                except Exception as e:
-                    logger.exception("Draft re-generation failed")
-                    if transition_task_state(task_id, TaskState.FAILED):
-                        error_event = ErrorEvent(
-                            correlation_id=correlation_id,
-                            task_id=task_id,
-                            task_state=TaskState.FAILED,
-                            error_code="LLM_EXECUTION_FAILED",
-                            message="AI outreach re-generation failed. Please verify configuration and try again."
-                        )
-                        await send_terminal_event(websocket, task_id, error_event)
-                    return
-
-                draft_str = state.draft or ""
-                continue_draft = not await _await_step_approval(
-                    websocket=websocket,
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    state=state,
-                    agent_step=AgentStep.DRAFTING_OUTREACH,
-                    step_data=draft_str,
-                    message="Outreach draft generated. Review and approve to continue to self-reflection.",
-                )
 
         state.pending_agent_step = None
         state.pending_step_data = None
@@ -672,52 +629,46 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         # =====================================================================
         # Step 4: SELF_REFLECTION
         # =====================================================================
-        if active_tasks.get(task_id, {}).get("cancelled"):
-            raise asyncio.CancelledError()
+        reflection_approved = False
+        while not reflection_approved:
+            if active_tasks.get(task_id, {}).get("cancelled"):
+                raise asyncio.CancelledError()
 
-        logger.info("Entering step: SELF_REFLECTION")
-        event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.RUNNING,
-            agent_step=AgentStep.SELF_REFLECTION,
-            message="Performing self-reflection..."
-        )
-        await safe_send_json(websocket, event.model_dump())
+            logger.info("Entering step: SELF_REFLECTION")
+            event = StatusUpdateEvent(
+                correlation_id=correlation_id,
+                task_id=task_id,
+                task_state=TaskState.RUNNING,
+                agent_step=AgentStep.SELF_REFLECTION,
+                message="Running self-reflection quality audit..."
+            )
+            await safe_send_json(websocket, event.model_dump())
 
-        try:
-            await reflection_tool(state)
-        except Exception as e:
-            logger.exception("Self-reflection failed")
-            if transition_task_state(task_id, TaskState.FAILED):
-                error_event = ErrorEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.FAILED,
-                    error_code="LLM_EXECUTION_FAILED",
-                    message=(
-                        f"AI draft self-reflection failed. "
-                        f"Please verify {get_provider_name().capitalize()} configuration and try again."
-                    )
-                )
-                await send_terminal_event(websocket, task_id, error_event)
-            return
+            try:
+                await reflection_tool(state)
+            except Exception as e:
+                logger.warning("Reflection tool failed, retrying...")
+                transition_task_state(task_id, TaskState.FAILED_RETRYING)
+                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
+                await asyncio.sleep(2.0)
+                transition_task_state(task_id, TaskState.RUNNING)
+                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
+                await reflection_tool(state)
 
-        improved_str = state.improved_draft or state.draft or ""
+            reflect_str = state.improved_draft or "Reflection completed."
 
-        if not await _await_step_approval(
-            websocket=websocket,
-            correlation_id=correlation_id,
-            task_id=task_id,
-            state=state,
-            agent_step=AgentStep.SELF_REFLECTION,
-            step_data=improved_str,
-            message="Self-reflection completed. Review the refined draft and approve to execute.",
-        ):
-            continue_reflection = True
-            while continue_reflection:
-                if active_tasks.get(task_id, {}).get("cancelled"):
-                    raise asyncio.CancelledError()
+            reflection_approved = await _await_step_approval(
+                websocket=websocket,
+                correlation_id=correlation_id,
+                task_id=task_id,
+                state=state,
+                agent_step=AgentStep.SELF_REFLECTION,
+                step_data=reflect_str,
+                message="Self-reflection completed. Approve to execute final outreach, or modify.",
+            )
+            
+            if not reflection_approved:
+                # If modification requested, loop back to regenerate draft incorporating feedback
                 state.approval_action = None
                 task_info = active_tasks.get(task_id)
                 if task_info:
@@ -725,59 +676,24 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                     if ae:
                         ae.clear()
 
-                logger.info("Re-running step: SELF_REFLECTION")
-                event = StatusUpdateEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.RUNNING,
-                    agent_step=AgentStep.SELF_REFLECTION,
-                    message="Re-running self-reflection..."
-                )
-                await safe_send_json(websocket, event.model_dump())
-
-                try:
-                    await reflection_tool(state)
-                except Exception as e:
-                    logger.exception("Self-reflection re-run failed")
-                    if transition_task_state(task_id, TaskState.FAILED):
-                        error_event = ErrorEvent(
-                            correlation_id=correlation_id,
-                            task_id=task_id,
-                            task_state=TaskState.FAILED,
-                            error_code="LLM_EXECUTION_FAILED",
-                            message="AI self-reflection re-run failed. Please verify configuration and try again."
-                        )
-                        await send_terminal_event(websocket, task_id, error_event)
-                    return
-
-                improved_str = state.improved_draft or state.draft or ""
-                continue_reflection = not await _await_step_approval(
-                    websocket=websocket,
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    state=state,
-                    agent_step=AgentStep.SELF_REFLECTION,
-                    step_data=improved_str,
-                    message="Self-reflection completed. Review the refined draft and approve to execute.",
-                )
-
         state.pending_agent_step = None
         state.pending_step_data = None
 
         # =====================================================================
-        # Step 5: EXECUTING (final step — no approval needed after this)
+        # Step 5: EXECUTING
         # =====================================================================
-        logger.info("Orchestration resumed after final approval")
+        logger.info("Entering step: EXECUTING")
         if not transition_task_state(task_id, TaskState.EXECUTING):
             logger.warning("Aborting: failed to transition to EXECUTING")
             return
+        task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.EXECUTING)
 
         event = StatusUpdateEvent(
             correlation_id=correlation_id,
             task_id=task_id,
             task_state=TaskState.EXECUTING,
             agent_step=AgentStep.EXECUTING,
-            message="Executing approved workflow..."
+            message="Executing final procurement outreach..."
         )
         await safe_send_json(websocket, event.model_dump())
 
@@ -785,66 +701,109 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             await execution_tool(state)
         except Exception as e:
             logger.exception("Execution approved, but workflow execution failed")
-            if transition_task_state(task_id, TaskState.FAILED):
-                error_event = ErrorEvent(
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    task_state=TaskState.FAILED,
-                    error_code="EXECUTION_FAILED",
-                    message=(
-                        "Execution approved, but workflow execution failed. "
-                        "Please verify system settings and try again."
+            
+            async with task_info["terminal_lock"]:
+                if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                    transition_task_state(task_id, TaskState.FAILED)
+                    task_repo.update_task_status(task_id, TaskState.EXECUTING, TaskState.FAILED)
+                    
+                    error_event = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.FAILED,
+                        error_code="EXECUTION_FAILED",
+                        message="Execution approved, but final delivery failed. Please verify configuration."
                     )
-                )
-                await send_terminal_event(websocket, task_id, error_event)
+                    task_info["terminal_emitted"] = True
+                    await safe_send_json(websocket, error_event.model_dump())
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
             return
 
         # SUCCESS
-        if transition_task_state(task_id, TaskState.SUCCESS):
-            completed_event = TaskCompletedEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.SUCCESS,
-                message=f"Task successfully executed. Outreach finalized. Result: {state.execution_result}",
-                final_response=state.improved_draft or state.draft
-            )
-            await send_terminal_event(websocket, task_id, completed_event)
-            logger.info("Orchestration completed successfully")
+        async with task_info["terminal_lock"]:
+            if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                if transition_task_state(task_id, TaskState.SUCCESS):
+                    # Save DB Task status
+                    task_repo.update_task_status(task_id, TaskState.EXECUTING, TaskState.SUCCESS)
+                    task_repo.update_task_final_output(task_id, state.execution_result or "")
+                    
+                    # Store memory context for future preferences
+                    memory_data = {
+                        "category": state.research_data.get("category") if state.research_data else None,
+                        "vendor_name": (state.selected_vendor.get("vendor_name") or state.selected_vendor.get("name")) if state.selected_vendor else None,
+                        "draft": state.improved_draft or state.draft
+                    }
+                    task_repo.update_task_memory(task_id, memory_data)
+                    
+                    completed_event = TaskCompletedEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.SUCCESS,
+                        message=f"Task successfully completed. Result: {state.execution_result}",
+                        final_response=state.improved_draft or state.draft or ""
+                    )
+                    task_info["terminal_emitted"] = True
+                    await safe_send_json(websocket, completed_event.model_dump())
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                    logger.info("Orchestration completed successfully")
 
     except asyncio.TimeoutError:
-        # Timeout already handled in _await_step_approval, just exit
         logger.info("Orchestration ended due to approval timeout")
     except asyncio.CancelledError:
         logger.info("Orchestration cancelled exception caught")
-        task_info = active_tasks.get(task_id)
-
         if websocket.client_state != WebSocketState.CONNECTED:
             return
-
-        if task_info and task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED):
-            return
-
-        if task_info and task_info.get("task_state") != TaskState.CANCELLED:
-            transition_task_state(task_id, TaskState.CANCELLED)
-
-        cancelled_event = TaskCancelledEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.CANCELLED,
-            message="Orchestration cancelled by client."
-        )
-        await send_terminal_event(websocket, task_id, cancelled_event)
+            
+        task_info = active_tasks.get(task_id)
+        if task_info:
+            async with task_info["terminal_lock"]:
+                if task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                    return
+                current_state = task_info.get("task_state")
+                transition_task_state(task_id, TaskState.CANCELLED)
+                task_repo.update_task_status(task_id, current_state, TaskState.CANCELLED)
+                
+                cancelled_event = TaskCancelledEvent(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    task_state=TaskState.CANCELLED,
+                    message="Orchestration cancelled by client."
+                )
+                task_info["terminal_emitted"] = True
+                await safe_send_json(websocket, cancelled_event.model_dump())
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
     except Exception as e:
         logger.exception("Orchestration unexpected failure")
-        if transition_task_state(task_id, TaskState.FAILED):
-            error_event = ErrorEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.FAILED,
-                error_code="ORCHESTRATION_FAILURE",
-                message="An unexpected system error occurred. Please verify configuration and try again."
-            )
-            await send_terminal_event(websocket, task_id, error_event)
+        task_info = active_tasks.get(task_id)
+        if task_info:
+            async with task_info["terminal_lock"]:
+                if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                    current_state = task_info.get("task_state")
+                    transition_task_state(task_id, TaskState.FAILED)
+                    task_repo.update_task_status(task_id, current_state, TaskState.FAILED)
+                    
+                    error_event = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.FAILED,
+                        error_code="ORCHESTRATION_FAILURE",
+                        message="An unexpected system error occurred. Please verify configuration."
+                    )
+                    task_info["terminal_emitted"] = True
+                    await safe_send_json(websocket, error_event.model_dump())
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
     finally:
         correlation_id_ctx.reset(corr_token)
         task_id_ctx.reset(task_token)

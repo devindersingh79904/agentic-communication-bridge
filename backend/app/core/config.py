@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Centralized configuration variables
-APPROVAL_TIMEOUT_SECONDS: int = int(os.getenv("APPROVAL_TIMEOUT_SECONDS", "10"))
+APPROVAL_TIMEOUT_SECONDS: int = int(os.getenv("APPROVAL_TIMEOUT_SECONDS", "60"))
 
 # Agent provider selection: "openai" or "ollama"
 AGENT_PROVIDER: str = os.getenv("AGENT_PROVIDER", "openai").strip().lower()
@@ -44,6 +44,23 @@ DEFAULT_PINCODE: str = os.getenv("DEFAULT_PINCODE", "560037").strip()
 DEFAULT_USER_NAME: str = os.getenv("DEFAULT_USER_NAME", "Devinder Singh").strip()
 DEFAULT_COMPANY_NAME: str = os.getenv("DEFAULT_COMPANY_NAME", "DSP Technologies").strip()
 REFLECTION_TEMPERATURE: float = float(os.getenv("REFLECTION_TEMPERATURE", "0.6"))
+
+# Database & Vector Store Settings
+DB_PATH: str = os.getenv("DB_PATH", "agent_procurement.db").strip()
+CHROMA_PERSIST_PATH: str = os.getenv("CHROMA_PERSIST_PATH", "./chroma_db").strip()
+
+# External Vendor Search Keys
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "").strip()
+SERPAPI_API_KEY: str = os.getenv("SERPAPI_API_KEY", "").strip()
+
+# WebSocket Heartbeat Settings
+HEARTBEAT_INTERVAL_SECONDS: int = int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "15"))
+HEARTBEAT_TIMEOUT_SECONDS: int = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "30"))
+
+# Retry Settings
+MAX_RETRY_ATTEMPTS: int = int(os.getenv("MAX_RETRY_ATTEMPTS", "3"))
+RETRY_INITIAL_DELAY: float = float(os.getenv("RETRY_INITIAL_DELAY", "1.0"))
+RETRY_BACKOFF_FACTOR: float = float(os.getenv("RETRY_BACKOFF_FACTOR", "2.0"))
 
 # ---------------------------------------------------------------------------
 # Log effective provider configuration on startup

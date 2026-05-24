@@ -37,3 +37,8 @@ class WorkflowState:
     # paused on awaiting approval and the data produced by that step.
     pending_agent_step: Optional[AgentStep] = None
     pending_step_data: Optional[str] = None
+
+    # Production-grade agent extensions
+    reflection_metadata: Optional[dict] = None
+    internal_rag_confidence: float = 0.0
+    memory_context: Optional[str] = None

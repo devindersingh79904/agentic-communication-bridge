@@ -1,5 +1,6 @@
-from typing import Optional
-from pydantic import BaseModel
+from typing import Optional, Dict, Any
+from datetime import datetime
+from pydantic import BaseModel, Field
 from app.core.enums import WebSocketEventType, TaskState, AgentStep, ApprovalAction
 
 class BaseWebSocketEvent(BaseModel):
@@ -9,6 +10,7 @@ class BaseWebSocketEvent(BaseModel):
     event_type: WebSocketEventType
     correlation_id: str
     task_id: Optional[str] = None
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
 
 class StatusUpdateEvent(BaseWebSocketEvent):
     """
@@ -30,6 +32,7 @@ class ApprovalRequiredEvent(BaseWebSocketEvent):
     step_data: Optional[str] = None
     message: str
     approval_timeout_seconds: Optional[int] = None
+    reflection_metadata: Optional[Dict[str, Any]] = None
 
 class TaskCompletedEvent(BaseWebSocketEvent):
     """

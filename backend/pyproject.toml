@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "uvicorn>=0.47.0",
     "websockets>=14.0",
+    "chromadb>=0.5.5",
 ]
 
 [dependency-groups]
