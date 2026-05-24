@@ -16,6 +16,7 @@ class PricingAnalysisOutput(BaseModel):
     recommended_vendor: Dict[str, Any]
     analysis_summary: str
     reasoning: List[str]
+    confidence: float = Field(0.85, description="Confidence score from 0.0 to 1.0")
 
 async def pricing_analysis_tool(query: str, vendors: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -35,9 +36,10 @@ async def pricing_analysis_tool(query: str, vendors: List[Dict[str, Any]]) -> Di
         "select the single best vendor based on the user's requirements. "
         "Generate a structured JSON response with the following keys:\n"
         "{\n"
-        '  "selected_vendor_name": "<name of the selected vendor>",\n'
-        '  "analysis_summary": "<brief summary comparing the choices>",\n'
-        '  "reasoning": ["<reason 1>", "<reason 2>", "<reason 3>"]\n'
+        '  "recommendedVendor": "<name of the selected vendor>",\n'
+        '  "confidence": 0.87,\n'
+        '  "reasoning": ["<reason 1>", "<reason 2>", "<reason 3>"],\n'
+        '  "analysis_summary": "<brief summary comparing the choices>"\n'
         "}\n"
         "Return ONLY the raw JSON object, no markdown blocks, no other text."
     )
@@ -51,6 +53,7 @@ async def pricing_analysis_tool(query: str, vendors: List[Dict[str, Any]]) -> Di
     recommended_vendor = input_data.vendors[0]
     analysis_summary = "Analysis completed."
     reasoning = ["Default selection due to parsing error"]
+    confidence = 0.85
     
     try:
         raw_output = await _llm_call("pricing_analysis", system_prompt, user_content, max_tokens=600)
@@ -61,13 +64,15 @@ async def pricing_analysis_tool(query: str, vendors: List[Dict[str, Any]]) -> Di
             raw_output = json_match.group(0)
             
         data = json.loads(raw_output)
-        selected_name = data.get("selected_vendor_name", "").strip().lower()
+        selected_name = data.get("recommendedVendor", "").strip().lower()
         analysis_summary = data.get("analysis_summary", "Analysis completed.")
         reasoning = data.get("reasoning", [])
+        confidence = float(data.get("confidence", 0.85))
         
         # Find matching vendor by name (case-insensitive fuzzy match)
         for v in input_data.vendors:
-            if selected_name in v["vendor_name"].strip().lower() or v["vendor_name"].strip().lower() in selected_name:
+            v_name = (v.get("vendor_name") or v.get("name", "")).strip().lower()
+            if selected_name in v_name or v_name in selected_name:
                 recommended_vendor = v
                 break
     except Exception as e:
@@ -75,12 +80,14 @@ async def pricing_analysis_tool(query: str, vendors: List[Dict[str, Any]]) -> Di
         # Default: select vendor with highest rating
         input_data.vendors.sort(key=lambda x: x.get("rating", 0.0), reverse=True)
         recommended_vendor = input_data.vendors[0]
-        analysis_summary = f"Selected {recommended_vendor['vendor_name']} based on highest vendor rating."
+        analysis_summary = f"Selected {recommended_vendor.get('vendor_name') or recommended_vendor.get('name')} based on highest vendor rating."
         reasoning = ["Highest vendor rating", f"Delivery within {recommended_vendor.get('delivery_days', 3)} days"]
+        confidence = 0.70
         
     output = PricingAnalysisOutput(
         recommended_vendor=recommended_vendor,
         analysis_summary=analysis_summary,
-        reasoning=reasoning
+        reasoning=reasoning,
+        confidence=confidence
     )
     return output.model_dump()

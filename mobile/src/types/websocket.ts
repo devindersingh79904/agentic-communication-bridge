@@ -4,13 +4,18 @@ export type TaskState =
   | 'IDLE'
   | 'SCHEDULED'
   | 'RUNNING'
-  | 'EXTERNAL_SEARCHING'
-  | 'FAILED_RETRYING'
-  | 'WAITING_APPROVAL'
-  | 'EXECUTING'
+  | 'SEARCHING_VENDORS'
+  | 'WAITING_VENDOR_SELECTION'
+  | 'ANALYZING_PRICING'
+  | 'WAITING_PRICE_APPROVAL'
+  | 'DRAFTING_OUTREACH'
+  | 'SELF_REFLECTION'
+  | 'WAITING_FINAL_APPROVAL'
+  | 'COMPLETED'
   | 'SUCCESS'
   | 'FAILED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'FAILED_RETRYING';
 
 export type AgentStep =
   | 'SEARCHING_VENDORS'
@@ -45,6 +50,7 @@ export interface PricingAnalysis {
   summary?: string;
   selected_vendor?: VendorResult;
   reasoning?: string[];
+  confidence?: number;
 }
 
 export interface ReflectionMetadata {

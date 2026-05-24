@@ -49,6 +49,16 @@ class TaskRepository:
                 )
             """)
             conn.commit()
+            
+            # Migration: add workflow_state_json column if it does not exist
+            with self._get_connection() as conn:
+                try:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN workflow_state_json TEXT")
+                    logger.info("Database migration: Added workflow_state_json column to tasks table")
+                except sqlite3.OperationalError:
+                    # Column already exists
+                    pass
+
 
     def create_task(self, task_id: str, status: str, user_prompt: str) -> None:
         """Saves a new task in SCHEDULED state."""
@@ -130,6 +140,27 @@ class TaskRepository:
                     "memory": json.loads(r["memory"]) if r["memory"] else {}
                 })
             return results
+
+    def update_task_workflow_state(self, task_id: str, state_json: str) -> None:
+        """Persists the complete workflow state JSON to the database."""
+        now = datetime.utcnow().isoformat() + "Z"
+        logger.info(f"DB: Saving workflow state JSON for task {task_id}")
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE tasks SET workflow_state_json = ?, updated_at = ? WHERE task_id = ?",
+                (state_json, now, task_id)
+            )
+            conn.commit()
+
+    def get_task_workflow_state(self, task_id: str) -> Optional[str]:
+        """Retrieves the persisted workflow state JSON for a task."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT workflow_state_json FROM tasks WHERE task_id = ?", (task_id,))
+            row = cursor.fetchone()
+            if row:
+                return row["workflow_state_json"]
+        return None
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Fetches the complete database record for a single task."""

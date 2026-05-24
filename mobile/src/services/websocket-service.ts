@@ -52,10 +52,13 @@ export const connectAgentWS = (prompt: string) => {
         text: 'Connected. Workflow initialized.',
       });
 
-      // Send START_TASK event with the user prompt
+      // Send START_TASK event with the user prompt (and existing task_id if resuming)
+      const existingTaskId = store.taskId;
+      const isRealTaskId = existingTaskId && !existingTaskId.startsWith('task-opt-');
       const startEvent = {
         event_type: CLIENT_EVENTS.START_TASK,
         prompt: prompt,
+        task_id: isRealTaskId ? existingTaskId : undefined,
       };
       ws.send(JSON.stringify(startEvent));
 
@@ -143,55 +146,43 @@ export const connectAgentWS = (prompt: string) => {
               ? approvalData.agent_step.replace(/_/g, ' ').toLowerCase()
               : 'step';
 
-            // SINGLE APPROVAL GATE: 
-            // Auto-approve intermediate steps (Searching, Pricing, Drafting)
-            if (approvalData.agent_step !== 'SELF_REFLECTION') {
-              store.appendMessage({
-                sender: 'system',
-                text: `📋 ${stepLabel} completed. Auto-approving step internally...`,
+            store.updateTaskState(approvalData.task_state);
+            store.setCurrentAgentStep(null);
+            store.setDraftMessage(approvalData.draft_message);
+            store.setCurrentPendingStep(approvalData.agent_step);
+            store.setCurrentStepData(approvalData.step_data ?? approvalData.draft_message);
+            store.setIsAwaitingApproval(true);
+            store.setIsRegenerating(false);
+            store.setRejectionFeedback('');
+            store.setError(null);
+
+            // Set dynamic timeout countdown
+            const timeoutSecs = approvalData.approval_timeout_seconds ?? 60;
+            store.setTimeoutCountdown(timeoutSecs);
+
+            if (timerId) clearInterval(timerId);
+            timerId = setInterval(() => {
+              store.setTimeoutCountdown((prev) => {
+                if (prev !== null && prev > 0) {
+                  return prev - 1;
+                } else {
+                  clearInterval(timerId);
+                  timerId = null;
+                  return null;
+                }
               });
-              // Auto-approve by sending message immediately
-              store.sendApprovalResponse('APPROVE');
-            } else {
-              // Pause and prompt for SELF_REFLECTION final approval
-              store.updateTaskState('WAITING_APPROVAL');
-              store.setCurrentAgentStep(null);
-              store.setDraftMessage(approvalData.draft_message);
-              store.setCurrentPendingStep(approvalData.agent_step);
-              store.setCurrentStepData(approvalData.step_data ?? approvalData.draft_message);
-              store.setIsAwaitingApproval(true);
-              store.setIsRegenerating(false);
-              store.setRejectionFeedback('');
-              store.setError(null);
+            }, 1000);
 
-              // Set dynamic timeout countdown
-              const timeoutSecs = approvalData.approval_timeout_seconds ?? 60;
-              store.setTimeoutCountdown(timeoutSecs);
+            store.appendMessage({
+              sender: 'system',
+              text: `📋 ${stepLabel} completed. Action required: authorize step to proceed.`,
+            });
 
-              if (timerId) clearInterval(timerId);
-              timerId = setInterval(() => {
-                store.setTimeoutCountdown((prev) => {
-                  if (prev !== null && prev > 0) {
-                    return prev - 1;
-                  } else {
-                    clearInterval(timerId);
-                    timerId = null;
-                    return null;
-                  }
-                });
-              }, 1000);
-
-              store.appendMessage({
-                sender: 'system',
-                text: `📋 final review audit completed. Action required: approve final proposal or request draft modifications.`,
-              });
-
-              store.appendMessage({
-                sender: 'agent',
-                text: approvalData.step_data ?? approvalData.draft_message,
-                agent_step: approvalData.agent_step,
-              });
-            }
+            store.appendMessage({
+              sender: 'agent',
+              text: approvalData.step_data ?? approvalData.draft_message,
+              agent_step: approvalData.agent_step,
+            });
             break;
 
           case SERVER_EVENTS.TASK_COMPLETED:

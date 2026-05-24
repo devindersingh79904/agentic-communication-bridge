@@ -30,25 +30,19 @@ The mobile interface is designed to maximize human-in-the-loop (HITL) visibility
 
 ## How it Works
 
-The application operates as a real-time state machine where orchestration steps are isolated into lightweight, modular async tools (`app/tools/`), sharing a centralized `WorkflowState` object inspired by graph-based orchestration:
+The application operates as a real-time, event-driven state machine guided by an LLM-based planner/decision engine and executed via a structured `ToolRegistry`. Instead of a hardcoded linear sequence, the system dynamically decides its path and handles human inputs:
 
-1. **Client Connects**: The client opens a WebSocket to `/v1/agent/connect`. The task is registered in `SCHEDULED` state.
-2. **Client Sends `START_TASK`**: The client sends a `START_TASK` event with the user's prompt. The backend creates a `WorkflowState(prompt=...)` and begins orchestration (`SCHEDULED → RUNNING`).
-3. **State Machine Execution**: The backend executes the workflow sequentially:
-   - `SEARCHING_VENDORS` → Runs `research_tool` (Vendor Discovery)
-   - `ANALYZING_PRICING` → Runs `analysis_tool` (Price/Offer Analysis)
-   - `DRAFTING_OUTREACH` → Runs `draft_tool` (OpenAI generates outreach using the user's prompt)
-   - `SELF_REFLECTION` → Runs `reflection_tool` (OpenAI reviews and improves the draft)
-4. **Approval Gate & Iterative Regeneration (`WAITING_APPROVAL`)**: The backend pauses and waits for client consent. 
-   - **Approve**: Transitions to `EXECUTING` → `SUCCESS`.
-   - **Reject**: Receives rejection feedback, increments the regeneration counter, and loops back to `DRAFTING_OUTREACH` / `SELF_REFLECTION` for refinement.
-   - **Stop**: Explicitly cancels execution at any phase (`CANCELLED`).
-   - The loop is bounded by `MAX_REGENERATION_ATTEMPTS` to prevent infinite loops.
-5. **Execution & Final States** (`WAITING_APPROVAL → EXECUTING → SUCCESS`):
-   - If approved, transitions to `EXECUTING`, calls `execution_tool`, then transitions to `SUCCESS`, streaming the final AI response payload.
-   - If the user clicks **Stop** or the timeout expires, it cancels (`CANCELLED`).
+1. **Client Connects**: The client opens a WebSocket to `/v1/agent/connect`. The task is initialized in `SCHEDULED` state.
+2. **Client Sends `START_TASK`**: The client sends a `START_TASK` event containing a user prompt. If the event payload includes a previously saved `task_id`, the system automatically restores the serialized `WorkflowState` from the SQLite database and resumes the task from its last active state.
+3. **LLM Decision Loop**: At each step of execution, the orchestrator queries the LLM Planner (`app/services/agent_planner.py`), which inspects the prompt, constraints, history, and feedback, and decides the next action (e.g. run a tool, complete execution, or wait for human input).
+4. **Tool Registry & Execution Traces**: All logic steps are executed via the `ToolRegistry` abstraction. It logs detailed input/output JSON traces for every execution in `WorkflowState.tool_traces` and wraps them in retry logic (exponential backoff) with graceful degraded fallbacks.
+5. **Interactive Human-in-the-Loop (HITL) Gates**:
+   - `WAITING_VENDOR_SELECTION`: Pauses after vendor search. The user can select multiple vendors on the mobile interface, reject vendors, specify text feedback (like "Prefer Dell partner"), and request a re-search.
+   - `WAITING_PRICE_APPROVAL`: Pauses after pricing analysis. Displays recommended vendor selection, justifications, and confidence score. The user can tap any vendor card to override the selection and approve.
+   - `WAITING_FINAL_APPROVAL`: Pauses after outreach drafting and self-reflection quality check. Displays the final outreach text and quality audit badges (Tone Check, Accuracy Check, Layout Verification).
+6. **Execution & Completion**: When final approval is given, the agent executes the outreach, updates the database, sends a `TASK_COMPLETED` payload, and gracefully terminates the session.
 
-Each tool reads/writes shared `WorkflowState` fields and pauses for a globally configurable delay (`AGENT_STEP_DELAY_SECONDS`).
+Workflow state is persisted directly to SQLite via `workflow_state_json` on every state transition, ensuring zero context loss on connection drops.
 
 ---
 
@@ -112,6 +106,24 @@ OLLAMA_MODEL=qwen2.5-coder:7b
 # =========================
 # Configurable delay in seconds for every workflow step
 AGENT_STEP_DELAY_SECONDS=2
+
+# =========================
+# Human-in-the-Loop & Autonomy Configuration
+# =========================
+# Toggle whether the agent pauses for human decisions (default: true)
+HUMAN_IN_LOOP=true
+
+# Automatically approve steps without waiting for human feedback (default: false)
+AUTO_APPROVE=false
+
+# Human response timeout window in seconds (default: 300)
+WAIT_FOR_HUMAN_TIMEOUT=300
+
+# Enable/disable self-reflection check (default: true)
+ENABLE_SELF_REFLECTION=true
+
+# Enable/disable Tavily external web search if database confidence is low (default: true)
+ENABLE_EXTERNAL_VENDOR_SEARCH=true
 
 # =========================
 # Regeneration Configuration

@@ -35,40 +35,164 @@ active_tasks: Dict[str, Dict[str, Any]] = {}
 _tasks_lock = asyncio.Lock()
 
 # Allowed state transitions for the workflow state machine
+# Flexible and planner-friendly: any active state can transition to any other active/terminal state.
 VALID_TRANSITIONS = {
-    TaskState.SCHEDULED: {TaskState.RUNNING, TaskState.CANCELLED},
-    TaskState.RUNNING: {
-        TaskState.WAITING_APPROVAL,
-        TaskState.EXECUTING,
+    TaskState.SCHEDULED: {
+        TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
         TaskState.FAILED,
         TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.RUNNING: {
+        TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.SEARCHING_VENDORS: {
+        TaskState.RUNNING,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
         TaskState.FAILED_RETRYING
     },
     TaskState.EXTERNAL_SEARCHING: {
         TaskState.RUNNING,
-        TaskState.WAITING_APPROVAL,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
         TaskState.FAILED,
-        TaskState.CANCELLED
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.WAITING_VENDOR_SELECTION: {
+        TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.ANALYZING_PRICING: {
+        TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.WAITING_PRICE_APPROVAL: {
+        TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.DRAFTING_OUTREACH: {
+        TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.SELF_REFLECTION: {
+        TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
+    },
+    TaskState.WAITING_FINAL_APPROVAL: {
+        TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
+        TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.COMPLETED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+        TaskState.FAILED_RETRYING
     },
     TaskState.FAILED_RETRYING: {
         TaskState.RUNNING,
+        TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
+        TaskState.WAITING_VENDOR_SELECTION,
+        TaskState.ANALYZING_PRICING,
+        TaskState.WAITING_PRICE_APPROVAL,
+        TaskState.DRAFTING_OUTREACH,
+        TaskState.SELF_REFLECTION,
+        TaskState.WAITING_FINAL_APPROVAL,
+        TaskState.COMPLETED,
         TaskState.FAILED,
         TaskState.CANCELLED
     },
-    TaskState.WAITING_APPROVAL: {
-        TaskState.RUNNING,
-        TaskState.EXECUTING,
-        TaskState.CANCELLED,
-        TaskState.FAILED
-    },
-    TaskState.EXECUTING: {
-        TaskState.SUCCESS,
-        TaskState.FAILED,
-        TaskState.CANCELLED
-    },
-    TaskState.SUCCESS: set(),
+    TaskState.COMPLETED: set(),
     TaskState.FAILED: set(),
     TaskState.CANCELLED: set(),
 }
@@ -105,7 +229,7 @@ def is_websocket_active(websocket: WebSocket) -> bool:
     """
     for task_info in active_tasks.values():
         if task_info.get("websocket") == websocket:
-            if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+            if task_info.get("task_state") not in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
                 return True
     return False
 
@@ -135,9 +259,14 @@ def set_task_reference(task_id: str, task: asyncio.Task) -> None:
     if task_id in active_tasks:
         active_tasks[task_id]["task"] = task
 
-def handle_approval_response(task_id: str, action: ApprovalAction, feedback: Optional[str] = None) -> None:
+def handle_approval_response(
+    task_id: str,
+    action: ApprovalAction,
+    feedback: Optional[str] = None,
+    selected_vendors: Optional[list] = None
+) -> None:
     """
-    Handles human-in-the-loop approval actions (APPROVE/REJECT).
+    Handles human-in-the-loop approval actions.
     Idempotent — duplicate events are safely ignored.
     """
     task_info = active_tasks.get(task_id)
@@ -146,7 +275,7 @@ def handle_approval_response(task_id: str, action: ApprovalAction, feedback: Opt
         return
 
     state = task_info.get("task_state")
-    if state != TaskState.WAITING_APPROVAL:
+    if state not in (TaskState.WAITING_VENDOR_SELECTION, TaskState.WAITING_PRICE_APPROVAL, TaskState.WAITING_FINAL_APPROVAL):
         logger.warning("Task received approval response but is in state: %s", state)
         return
 
@@ -163,12 +292,14 @@ def handle_approval_response(task_id: str, action: ApprovalAction, feedback: Opt
     if workflow_state:
         workflow_state.approval_action = action
         workflow_state.rejection_feedback = feedback
+        if selected_vendors is not None:
+            workflow_state.selected_vendors = selected_vendors
 
-    logger.info("Approval response received: %s", action)
+    logger.info("Approval response received: %s (vendors: %s)", action, selected_vendors)
     
-    # Transition out of WAITING_APPROVAL immediately to prevent race conditions with clients/tests polling state
+    # Transition out of waiting state immediately to prevent race conditions
     transition_task_state(task_id, TaskState.RUNNING)
-    task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.RUNNING)
+    task_repo.update_task_status(task_id, state, TaskState.RUNNING)
     
     approval_event.set()
 
@@ -263,7 +394,7 @@ async def cancel_task(task_id: str) -> None:
     terminal_lock = task_info.get("terminal_lock")
     if terminal_lock:
         async with terminal_lock:
-            if task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+            if task_info.get("task_state") in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
                 return
             old_state = task_info.get("task_state")
             if not transition_task_state(task_id, TaskState.CANCELLED):
@@ -311,6 +442,7 @@ async def _await_step_approval(
     agent_step: AgentStep,
     step_data: str,
     message: str,
+    waiting_state: TaskState,
 ) -> bool:
     """
     Pauses the workflow and waits for human approval of a step's output.
@@ -335,42 +467,44 @@ async def _await_step_approval(
     state.approval_action = None
         
     old_state = task_info.get("task_state")
-    if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
-        logger.warning("Aborting: failed to transition to WAITING_APPROVAL for step %s", agent_step)
+    if not transition_task_state(task_id, waiting_state):
+        logger.warning("Aborting: failed to transition to %s for step %s", waiting_state, agent_step)
         return False
-    task_repo.update_task_status(task_id, old_state, TaskState.WAITING_APPROVAL)
+    task_repo.update_task_status(task_id, old_state, waiting_state)
 
     app_req_event = ApprovalRequiredEvent(
         correlation_id=correlation_id,
         task_id=task_id,
-        task_state=TaskState.WAITING_APPROVAL,
+        task_state=waiting_state,
         agent_step=agent_step,
         draft_message=step_data,
         step_data=step_data,
         message=message,
-        approval_timeout_seconds=config.APPROVAL_TIMEOUT_SECONDS,
+        approval_timeout_seconds=config.WAIT_FOR_HUMAN_TIMEOUT,
         reflection_metadata=state.reflection_metadata if agent_step == AgentStep.SELF_REFLECTION else None,
         vendors=state.research_data.get("vendors") if state.research_data else None,
         selected_vendor=state.selected_vendor,
         pricing_analysis={
             "summary": state.analysis_summary,
-            "selected_vendor": state.selected_vendor
+            "selected_vendor": state.selected_vendor,
+            "confidence": state.selected_vendor.get("confidence", 0.85) if state.selected_vendor else 0.85,
+            "reasoning": state.selected_vendor.get("reasoning", []) if state.selected_vendor else []
         } if state.analysis_summary else None
     )
     await safe_send_json(websocket, app_req_event.model_dump())
 
     # Wait for approval with timeout
-    logger.info("Approval timeout started (%s seconds) for step %s", config.APPROVAL_TIMEOUT_SECONDS, agent_step)
+    logger.info("Approval timeout started (%s seconds) for step %s", config.WAIT_FOR_HUMAN_TIMEOUT, agent_step)
     try:
-        await asyncio.wait_for(approval_event.wait(), timeout=config.APPROVAL_TIMEOUT_SECONDS)
+        await asyncio.wait_for(approval_event.wait(), timeout=config.WAIT_FOR_HUMAN_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Approval timeout exceeded for step %s. Task cancelled automatically.", agent_step)
         
         async with task_info["terminal_lock"]:
-            if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+            if task_info.get("task_state") not in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
                 transition_task_state(task_id, TaskState.CANCELLED)
                 task_info["cancelled"] = True
-                task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.CANCELLED)
+                task_repo.update_task_status(task_id, waiting_state, TaskState.CANCELLED)
                 
                 cancelled_event = TaskCancelledEvent(
                     correlation_id=correlation_id,
@@ -396,7 +530,7 @@ async def _await_step_approval(
     if action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
         logger.info("Step %s received %s. Re-running step...", agent_step, action.value)
         transition_task_state(task_id, TaskState.RUNNING)
-        task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.RUNNING)
+        task_repo.update_task_status(task_id, waiting_state, TaskState.RUNNING)
         return False
 
     # APPROVED
@@ -406,7 +540,7 @@ async def _await_step_approval(
         logger.info("Step %s approved. Proceeding...", agent_step)
         
     transition_task_state(task_id, TaskState.RUNNING)
-    task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.RUNNING)
+    task_repo.update_task_status(task_id, waiting_state, TaskState.RUNNING)
     return True
 
 def _extract_vendor_from_feedback(feedback: Optional[str], known_vendors: list) -> Optional[dict]:
@@ -427,20 +561,42 @@ def _extract_vendor_from_feedback(feedback: Optional[str], known_vendors: list) 
 async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: str, state: WorkflowState) -> None:
     """
     Executes the async agent orchestration workflow using shared WorkflowState.
-    Flow: SEARCHING_VENDORS -> ANALYZING_PRICING -> DRAFTING_OUTREACH -> SELF_REFLECTION -> EXECUTING
-    Each step is evaluated, logged, and awaits approval.
+    Decoupled from sequential code, running as a true state machine guided by LLM Planner
+    and ToolRegistry.
     """
     corr_token = set_correlation_id(correlation_id)
     task_token = set_task_id(task_id)
     
+    # 1. Resumption check: check if task workflow state is already in database
+    from app.core.tool_registry import tool_registry
+    from app.services.agent_planner import planner
+    
+    persisted_state_json = task_repo.get_task_workflow_state(task_id)
+    if persisted_state_json:
+        logger.info("Resuming orchestration session for task %s from database", task_id)
+        try:
+            state = WorkflowState.from_json(persisted_state_json)
+            # Link to active tasks registry
+            task_info = active_tasks.get(task_id)
+            if task_info:
+                task_info["workflow_state"] = state
+                task_info["task_state"] = state.current_step
+        except Exception as e:
+            logger.warning("Failed to deserialize persisted state: %s. Starting fresh.", e)
+            state.current_step = TaskState.SCHEDULED
+    else:
+        # Fresh schedule
+        state.current_step = TaskState.SCHEDULED
+        task_repo.update_task_workflow_state(task_id, state.to_json())
+        
     task_info = active_tasks.get(task_id)
     if task_info:
         task_info["workflow_state"] = state
         
-    logger.info("Orchestration workflow started with prompt: %.100s", state.prompt)
+    logger.info("Orchestration workflow loop started for task %s", task_id)
     
     try:
-        # Optimistic load recent task memory context
+        # Load task history context optimistically for memory
         try:
             recent = task_repo.get_recent_successful_tasks(limit=3)
             if recent:
@@ -452,349 +608,254 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 state.memory_context = "\n---\n".join(memory_parts)
                 logger.info("Loaded task history context into state.memory_context")
         except Exception as e:
-            logger.warning("Failed to load task history for memory context: %s", e)
+            logger.warning("Failed to load task history for memory: %s", e)
 
-        # Transition SCHEDULED -> RUNNING
-        if not transition_task_state(task_id, TaskState.RUNNING):
-            logger.warning("Aborting orchestration run: failed to transition task state to RUNNING")
-            return
-        task_repo.update_task_status(task_id, TaskState.SCHEDULED, TaskState.RUNNING)
+        # Transition task to RUNNING initial state if SCHEDULED
+        if state.current_step == TaskState.SCHEDULED:
+            if not transition_task_state(task_id, TaskState.RUNNING):
+                logger.warning("Aborting orchestration run: failed to transition task state to RUNNING")
+                return
+            task_repo.update_task_status(task_id, TaskState.SCHEDULED, TaskState.RUNNING)
+            state.current_step = TaskState.RUNNING
 
-        # =====================================================================
-        # Step 1: SEARCHING_VENDORS
-        # =====================================================================
-        research_approved = False
-        while not research_approved:
-            if active_tasks.get(task_id, {}).get("cancelled"):
+        # 2. Main State Machine Loop
+        while state.current_step not in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
+            # Check cancellation
+            task_info = active_tasks.get(task_id)
+            if not task_info or task_info.get("cancelled"):
                 raise asyncio.CancelledError()
 
-            logger.info("Entering step: SEARCHING_VENDORS")
-            event = StatusUpdateEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.RUNNING,
-                agent_step=AgentStep.SEARCHING_VENDORS,
-                message="Searching local database and online catalogs..."
-            )
-            await safe_send_json(websocket, event.model_dump())
+            # Ask Planner Decision Engine what to do next
+            decision = await planner.decide_next_action(state)
+            action = decision.get("next_action")
+            reason = decision.get("reason", "")
+            params = decision.get("parameters", {})
+            
+            logger.info("Planner Decision: Action='%s', Reason='%s'", action, reason)
 
-            # Call tool with transient retry state logging
-            try:
-                await research_tool(state)
-            except Exception as e:
-                logger.warning("Research tool failed, entering retry state...")
-                transition_task_state(task_id, TaskState.FAILED_RETRYING)
-                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
-                await asyncio.sleep(2.0)
-                transition_task_state(task_id, TaskState.RUNNING)
-                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
-                await research_tool(state)
+            # Update DB with current state
+            task_repo.update_task_workflow_state(task_id, state.to_json())
 
-            research_data_str = ""
-            if state.research_data:
-                vendors = state.research_data.get("vendors", [])
-                market_insights = state.research_data.get("market_insights", "")
-                vendor_list = "\n".join(
-                    [f"• {v.get('vendor_name') or v.get('name', 'Unknown')} (Rating: {v.get('rating', 'N/A')}, Location: {v.get('location', 'N/A')})" for v in vendors]
-                ) if vendors else "No vendors found."
-                research_data_str = (
-                    f"Vendors Discovered:\n{vendor_list}\n\n"
-                    f"Market Insights: {market_insights}"
+            # Check if planner decided to complete
+            if action == "complete":
+                state.current_step = TaskState.COMPLETED
+                break
+            
+            # Check if planner decided to wait for human selection or approval
+            elif action == "wait_for_human":
+                step_name = params.get("step")
+                
+                # Check environment overrides (AUTO_APPROVE or HUMAN_IN_LOOP = false)
+                is_auto_approve = config.AUTO_APPROVE or not config.HUMAN_IN_LOOP
+                if is_auto_approve:
+                    logger.info("AUTO_APPROVE is enabled. Automatically approving '%s' step.", step_name)
+                    state.approval_action = ApprovalAction.APPROVE
+                    if step_name == "vendor_selection":
+                        vendors = state.research_data.get("vendors", []) if state.research_data else []
+                        state.selected_vendors = vendors
+                    state.current_step = TaskState.RUNNING
+                    continue
+
+                # Pause execution and prompt user
+                waiting_state = TaskState.WAITING_VENDOR_SELECTION
+                agent_step = AgentStep.SEARCHING_VENDORS
+                step_data = ""
+                message = "Review discovered vendors."
+
+                if step_name == "vendor_selection":
+                    waiting_state = TaskState.WAITING_VENDOR_SELECTION
+                    agent_step = AgentStep.SEARCHING_VENDORS
+                    vendors = state.research_data.get("vendors", []) if state.research_data else []
+                    vendor_names = [v.get("vendor_name") or v.get("name", "Unknown") for v in vendors]
+                    step_data = "\n".join([f"• {name}" for name in vendor_names])
+                    message = "Vendor discovery complete. Select candidates and approve."
+                elif step_name == "price_approval":
+                    waiting_state = TaskState.WAITING_PRICE_APPROVAL
+                    agent_step = AgentStep.ANALYZING_PRICING
+                    step_data = state.analysis_summary or ""
+                    if state.selected_vendor:
+                        step_data += f"\n\nSelected Vendor: {state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name')}"
+                    message = "Pricing analysis complete. Approve to generate outreach draft."
+                elif step_name == "final_approval":
+                    waiting_state = TaskState.WAITING_FINAL_APPROVAL
+                    agent_step = AgentStep.SELF_REFLECTION
+                    step_data = state.improved_draft or state.draft or ""
+                    message = "Self-reflection completed. Approve to execute outreach proposal."
+
+                state.current_step = waiting_state
+                task_repo.update_task_workflow_state(task_id, state.to_json())
+
+                approved = await _await_step_approval(
+                    websocket=websocket,
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    state=state,
+                    agent_step=agent_step,
+                    step_data=step_data,
+                    message=message,
+                    waiting_state=waiting_state
                 )
 
-            research_approved = await _await_step_approval(
-                websocket=websocket,
-                correlation_id=correlation_id,
-                task_id=task_id,
-                state=state,
-                agent_step=AgentStep.SEARCHING_VENDORS,
-                step_data=research_data_str,
-                message="Vendor discovery complete. Review candidates and approve to analyze pricing.",
-            )
-            
-            # Reset feedback
-            if not research_approved:
-                state.rejection_feedback = None
+                # Post-approval verification
+                if active_tasks.get(task_id, {}).get("cancelled"):
+                    raise asyncio.CancelledError()
 
-        state.pending_agent_step = None
-        state.pending_step_data = None
-
-        # =====================================================================
-        # Step 2: ANALYZING_PRICING
-        # =====================================================================
-        analysis_approved = False
-        while not analysis_approved:
-            if active_tasks.get(task_id, {}).get("cancelled"):
-                raise asyncio.CancelledError()
-
-            logger.info("Entering step: ANALYZING_PRICING")
-            event = StatusUpdateEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.RUNNING,
-                agent_step=AgentStep.ANALYZING_PRICING,
-                message="Analyzing catalogs and pricing...",
-                vendors=state.research_data.get("vendors") if state.research_data else None
-            )
-            await safe_send_json(websocket, event.model_dump())
-
-            try:
-                await analysis_tool(state)
-            except Exception as e:
-                logger.warning("Analysis tool failed, retrying...")
-                transition_task_state(task_id, TaskState.FAILED_RETRYING)
-                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
-                await asyncio.sleep(2.0)
-                transition_task_state(task_id, TaskState.RUNNING)
-                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
-                await analysis_tool(state)
-
-            analysis_str = state.analysis_summary or "Analysis completed."
-            if state.selected_vendor:
-                analysis_str += f"\n\nSelected Vendor: {state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name', 'Unknown')} ({state.selected_vendor.get('location', 'N/A')})"
-
-            analysis_approved = await _await_step_approval(
-                websocket=websocket,
-                correlation_id=correlation_id,
-                task_id=task_id,
-                state=state,
-                agent_step=AgentStep.ANALYZING_PRICING,
-                step_data=analysis_str,
-                message="Pricing analysis complete. Approve to generate outreach draft, or reject to adjust criteria.",
-            )
-
-            if not analysis_approved:
-                # Support forcing a specific vendor from user feedback
-                vendors = state.research_data.get("vendors", []) if state.research_data else []
-                matching_vendor = _extract_vendor_from_feedback(state.rejection_feedback, vendors)
-
-                if matching_vendor:
-                    logger.info("User requested vendor focus: '%s'. Re-running research...", matching_vendor.get("vendor_name") or matching_vendor.get("name", "Unknown"))
-                    state.selected_vendor = matching_vendor
-                    state.rejection_feedback = None
-                    # Clear approval event
-                    task_info = active_tasks.get(task_id)
-                    if task_info:
-                        ae = task_info.get("approval_event")
-                        if ae:
-                            ae.clear()
-                    # Re-run research focusing on preference
-                    await research_tool(state)
-                    await analysis_tool(state)
+                if not approved:
+                    # User rejected or requested changes
+                    if state.rejection_feedback:
+                        state.feedback_history.append(state.rejection_feedback)
                 else:
-                    state.approval_action = None
-                    task_info = active_tasks.get(task_id)
-                    if task_info:
-                        ae = task_info.get("approval_event")
-                        if ae:
-                            ae.clear()
+                    # User approved
+                    pass
 
-        state.pending_agent_step = None
-        state.pending_step_data = None
-
-        # =====================================================================
-        # Step 3: DRAFTING_OUTREACH
-        # =====================================================================
-        draft_approved = False
-        while not draft_approved:
-            if active_tasks.get(task_id, {}).get("cancelled"):
-                raise asyncio.CancelledError()
-
-            logger.info("Entering step: DRAFTING_OUTREACH")
-            event = StatusUpdateEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.RUNNING,
-                agent_step=AgentStep.DRAFTING_OUTREACH,
-                message="Drafting outreach communication...",
-                vendors=state.research_data.get("vendors") if state.research_data else None,
-                selected_vendor=state.selected_vendor,
-                pricing_analysis={
-                    "summary": state.analysis_summary,
-                    "selected_vendor": state.selected_vendor
-                } if state.analysis_summary else None
-            )
-            await safe_send_json(websocket, event.model_dump())
-
-            try:
-                await draft_tool(state)
-            except Exception as e:
-                logger.warning("Draft tool failed, retrying...")
-                transition_task_state(task_id, TaskState.FAILED_RETRYING)
-                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
-                await asyncio.sleep(2.0)
-                transition_task_state(task_id, TaskState.RUNNING)
-                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
-                await draft_tool(state)
-
-            draft_str = state.draft or "Draft completed."
-
-            draft_approved = await _await_step_approval(
-                websocket=websocket,
-                correlation_id=correlation_id,
-                task_id=task_id,
-                state=state,
-                agent_step=AgentStep.DRAFTING_OUTREACH,
-                step_data=draft_str,
-                message="Outreach draft generated. Approve to run self-reflection audit, or modify.",
-            )
-            
-            if not draft_approved:
-                # Capture modification instructions
                 state.approval_action = None
-                task_info = active_tasks.get(task_id)
-                if task_info:
-                    ae = task_info.get("approval_event")
-                    if ae:
-                        ae.clear()
+                state.rejection_feedback = None
+                state.current_step = TaskState.RUNNING
 
-        state.pending_agent_step = None
-        state.pending_step_data = None
-
-        # =====================================================================
-        # Step 4: SELF_REFLECTION
-        # =====================================================================
-        reflection_approved = False
-        while not reflection_approved:
-            if active_tasks.get(task_id, {}).get("cancelled"):
-                raise asyncio.CancelledError()
-
-            logger.info("Entering step: SELF_REFLECTION")
-            event = StatusUpdateEvent(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                task_state=TaskState.RUNNING,
-                agent_step=AgentStep.SELF_REFLECTION,
-                message="Running self-reflection quality audit...",
-                vendors=state.research_data.get("vendors") if state.research_data else None,
-                selected_vendor=state.selected_vendor,
-                pricing_analysis={
-                    "summary": state.analysis_summary,
-                    "selected_vendor": state.selected_vendor
-                } if state.analysis_summary else None
-            )
-            await safe_send_json(websocket, event.model_dump())
-
-            try:
-                await reflection_tool(state)
-            except Exception as e:
-                logger.warning("Reflection tool failed, retrying...")
-                transition_task_state(task_id, TaskState.FAILED_RETRYING)
-                task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.FAILED_RETRYING)
-                await asyncio.sleep(2.0)
-                transition_task_state(task_id, TaskState.RUNNING)
-                task_repo.update_task_status(task_id, TaskState.FAILED_RETRYING, TaskState.RUNNING)
-                await reflection_tool(state)
-
-            reflect_str = state.improved_draft or "Reflection completed."
-
-            reflection_approved = await _await_step_approval(
-                websocket=websocket,
-                correlation_id=correlation_id,
-                task_id=task_id,
-                state=state,
-                agent_step=AgentStep.SELF_REFLECTION,
-                step_data=reflect_str,
-                message="Self-reflection completed. Approve to execute final outreach, or modify.",
-            )
-            
-            if not reflection_approved:
-                # If modification requested, loop back to regenerate draft incorporating feedback
-                state.approval_action = None
-                task_info = active_tasks.get(task_id)
-                if task_info:
-                    ae = task_info.get("approval_event")
-                    if ae:
-                        ae.clear()
-
-        state.pending_agent_step = None
-        state.pending_step_data = None
-
-        # =====================================================================
-        # Step 5: EXECUTING
-        # =====================================================================
-        logger.info("Entering step: EXECUTING")
-        if not transition_task_state(task_id, TaskState.EXECUTING):
-            logger.warning("Aborting: failed to transition to EXECUTING")
-            return
-        task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.EXECUTING)
-
-        event = StatusUpdateEvent(
-            correlation_id=correlation_id,
-            task_id=task_id,
-            task_state=TaskState.EXECUTING,
-            agent_step=AgentStep.EXECUTING,
-            message="Executing final procurement outreach...",
-            vendors=state.research_data.get("vendors") if state.research_data else None,
-            selected_vendor=state.selected_vendor,
-            pricing_analysis={
-                "summary": state.analysis_summary,
-                "selected_vendor": state.selected_vendor
-            } if state.analysis_summary else None
-        )
-        await safe_send_json(websocket, event.model_dump())
-
-        try:
-            await execution_tool(state)
-        except Exception as e:
-            logger.exception("Execution approved, but workflow execution failed")
-            
-            async with task_info["terminal_lock"]:
-                if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
-                    transition_task_state(task_id, TaskState.FAILED)
-                    task_repo.update_task_status(task_id, TaskState.EXECUTING, TaskState.FAILED)
+            else:
+                # Tool Execution via ToolRegistry
+                tool_name = action
+                
+                # Execute registered tool and update corresponding step state
+                if tool_name == "vendor_search":
+                    state.current_step = TaskState.SEARCHING_VENDORS
+                    task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.SEARCHING_VENDORS)
                     
-                    error_event = ErrorEvent(
+                    event = StatusUpdateEvent(
                         correlation_id=correlation_id,
                         task_id=task_id,
-                        task_state=TaskState.FAILED,
-                        error_code="EXECUTION_FAILED",
-                        message="Execution approved, but final delivery failed. Please verify configuration."
+                        task_state=TaskState.SEARCHING_VENDORS,
+                        agent_step=AgentStep.SEARCHING_VENDORS,
+                        message="Searching local database and online catalogs..."
                     )
-                    task_info["terminal_emitted"] = True
-                    await safe_send_json(websocket, error_event.model_dump())
-                    try:
-                        await websocket.close()
-                    except Exception:
-                        pass
-            return
-
-        # SUCCESS
-        async with task_info["terminal_lock"]:
-            if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
-                if transition_task_state(task_id, TaskState.SUCCESS):
-                    # Save DB Task status
-                    task_repo.update_task_status(task_id, TaskState.EXECUTING, TaskState.SUCCESS)
-                    task_repo.update_task_final_output(task_id, state.execution_result or "")
+                    await safe_send_json(websocket, event.model_dump())
                     
-                    # Store memory context for future preferences
-                    memory_data = {
-                        "category": state.research_data.get("category") if state.research_data else None,
-                        "vendor_name": (state.selected_vendor.get("vendor_name") or state.selected_vendor.get("name")) if state.selected_vendor else None,
-                        "draft": state.improved_draft or state.draft
-                    }
-                    task_repo.update_task_memory(task_id, memory_data)
+                    await tool_registry.execute("vendor_search", state)
+                    state.current_step = TaskState.RUNNING
                     
-                    completed_event = TaskCompletedEvent(
+                elif tool_name == "pricing_analysis":
+                    state.current_step = TaskState.ANALYZING_PRICING
+                    task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.ANALYZING_PRICING)
+                    
+                    event = StatusUpdateEvent(
                         correlation_id=correlation_id,
                         task_id=task_id,
-                        task_state=TaskState.SUCCESS,
-                        message=f"Task successfully completed. Result: {state.execution_result}",
-                        final_response=state.improved_draft or state.draft or "",
+                        task_state=TaskState.ANALYZING_PRICING,
+                        agent_step=AgentStep.ANALYZING_PRICING,
+                        message="Analyzing catalogs and pricing...",
+                        vendors=state.research_data.get("vendors") if state.research_data else None
+                    )
+                    await safe_send_json(websocket, event.model_dump())
+                    
+                    await tool_registry.execute("pricing_analysis", state)
+                    state.current_step = TaskState.RUNNING
+                    
+                elif tool_name == "draft_outreach":
+                    state.current_step = TaskState.DRAFTING_OUTREACH
+                    task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.DRAFTING_OUTREACH)
+                    
+                    event = StatusUpdateEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.DRAFTING_OUTREACH,
+                        agent_step=AgentStep.DRAFTING_OUTREACH,
+                        message="Drafting outreach communication...",
                         vendors=state.research_data.get("vendors") if state.research_data else None,
                         selected_vendor=state.selected_vendor,
                         pricing_analysis={
                             "summary": state.analysis_summary,
-                            "selected_vendor": state.selected_vendor
+                            "selected_vendor": state.selected_vendor,
+                            "confidence": state.selected_vendor.get("confidence", 0.85) if state.selected_vendor else 0.85,
+                            "reasoning": state.selected_vendor.get("reasoning", []) if state.selected_vendor else []
                         } if state.analysis_summary else None
                     )
-                    task_info["terminal_emitted"] = True
-                    await safe_send_json(websocket, completed_event.model_dump())
-                    try:
-                        await websocket.close()
-                    except Exception:
-                        pass
-                    logger.info("Orchestration completed successfully")
+                    await safe_send_json(websocket, event.model_dump())
+                    
+                    await tool_registry.execute("draft_outreach", state)
+                    state.current_step = TaskState.RUNNING
+                    
+                elif tool_name == "self_reflection":
+                    state.current_step = TaskState.SELF_REFLECTION
+                    task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.SELF_REFLECTION)
+                    
+                    event = StatusUpdateEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.SELF_REFLECTION,
+                        agent_step=AgentStep.SELF_REFLECTION,
+                        message="Running self-reflection quality audit...",
+                        vendors=state.research_data.get("vendors") if state.research_data else None,
+                        selected_vendor=state.selected_vendor,
+                        pricing_analysis={
+                            "summary": state.analysis_summary,
+                            "selected_vendor": state.selected_vendor,
+                            "confidence": state.selected_vendor.get("confidence", 0.85) if state.selected_vendor else 0.85,
+                            "reasoning": state.selected_vendor.get("reasoning", []) if state.selected_vendor else []
+                        } if state.analysis_summary else None
+                    )
+                    await safe_send_json(websocket, event.model_dump())
+                    
+                    await tool_registry.execute("self_reflection", state)
+                    state.current_step = TaskState.RUNNING
+                    
+                elif tool_name == "execute_outreach":
+                    task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.RUNNING)
+                    
+                    event = StatusUpdateEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.RUNNING,
+                        agent_step=AgentStep.SELF_REFLECTION,
+                        message="Executing final procurement outreach..."
+                    )
+                    await safe_send_json(websocket, event.model_dump())
+                    
+                    await tool_registry.execute("execute_outreach", state)
+                    state.current_step = TaskState.COMPLETED
+                    
+                # Small delay to make workflow UI feel natural and premium
+                await asyncio.sleep(config.AGENT_STEP_DELAY_SECONDS)
+
+        # 3. Success Finalization
+        if state.current_step == TaskState.COMPLETED:
+            task_info = active_tasks.get(task_id)
+            if task_info:
+                async with task_info["terminal_lock"]:
+                    if task_info.get("task_state") not in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
+                        transition_task_state(task_id, TaskState.COMPLETED)
+                        task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.COMPLETED)
+                        task_repo.update_task_final_output(task_id, state.execution_result or "")
+                        
+                        # Store memory preference context
+                        memory_data = {
+                            "category": state.research_data.get("category") if state.research_data else None,
+                            "vendor_name": (state.selected_vendor.get("vendor_name") or state.selected_vendor.get("name")) if state.selected_vendor else None,
+                            "draft": state.improved_draft or state.draft
+                        }
+                        task_repo.update_task_memory(task_id, memory_data)
+                        
+                        completed_event = TaskCompletedEvent(
+                            correlation_id=correlation_id,
+                            task_id=task_id,
+                            task_state=TaskState.COMPLETED,
+                            message=f"Task successfully completed. Result: {state.execution_result}",
+                            final_response=state.improved_draft or state.draft or "",
+                            vendors=state.research_data.get("vendors") if state.research_data else None,
+                            selected_vendor=state.selected_vendor,
+                            pricing_analysis={
+                                "summary": state.analysis_summary,
+                                "selected_vendor": state.selected_vendor,
+                                "confidence": state.selected_vendor.get("confidence", 0.85) if state.selected_vendor else 0.85,
+                                "reasoning": state.selected_vendor.get("reasoning", []) if state.selected_vendor else []
+                            } if state.analysis_summary else None
+                        )
+                        task_info["terminal_emitted"] = True
+                        await safe_send_json(websocket, completed_event.model_dump())
+                        try:
+                            await websocket.close()
+                        except Exception:
+                            pass
+                        logger.info("Orchestration completed successfully")
 
     except asyncio.TimeoutError:
         logger.info("Orchestration ended due to approval timeout")
@@ -806,7 +867,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         task_info = active_tasks.get(task_id)
         if task_info:
             async with task_info["terminal_lock"]:
-                if task_info.get("task_state") in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                if task_info.get("task_state") in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
                     return
                 current_state = task_info.get("task_state")
                 transition_task_state(task_id, TaskState.CANCELLED)
@@ -829,7 +890,7 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
         task_info = active_tasks.get(task_id)
         if task_info:
             async with task_info["terminal_lock"]:
-                if task_info.get("task_state") not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                if task_info.get("task_state") not in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
                     current_state = task_info.get("task_state")
                     transition_task_state(task_id, TaskState.FAILED)
                     task_repo.update_task_status(task_id, current_state, TaskState.FAILED)

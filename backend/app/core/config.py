@@ -7,6 +7,12 @@ load_dotenv()
 
 # Centralized configuration variables
 APPROVAL_TIMEOUT_SECONDS: int = int(os.getenv("APPROVAL_TIMEOUT_SECONDS", "60"))
+HUMAN_IN_LOOP: bool = os.getenv("HUMAN_IN_LOOP", "true").lower() == "true"
+AUTO_APPROVE: bool = os.getenv("AUTO_APPROVE", "false").lower() == "true"
+WAIT_FOR_HUMAN_TIMEOUT: int = int(os.getenv("WAIT_FOR_HUMAN_TIMEOUT", "300"))
+ENABLE_SELF_REFLECTION: bool = os.getenv("ENABLE_SELF_REFLECTION", "true").lower() == "true"
+ENABLE_EXTERNAL_VENDOR_SEARCH: bool = os.getenv("ENABLE_EXTERNAL_VENDOR_SEARCH", "true").lower() == "true"
+
 
 # Agent provider selection: "openai" or "ollama"
 AGENT_PROVIDER: str = os.getenv("AGENT_PROVIDER", "openai").strip().lower()

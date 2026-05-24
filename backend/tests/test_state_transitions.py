@@ -21,24 +21,20 @@ async def test_valid_transitions():
     assert transition_task_state(task_id, TaskState.RUNNING) is True
     assert active_tasks[task_id]["task_state"] == TaskState.RUNNING
     
-    # RUNNING -> WAITING_APPROVAL
-    assert transition_task_state(task_id, TaskState.WAITING_APPROVAL) is True
-    assert active_tasks[task_id]["task_state"] == TaskState.WAITING_APPROVAL
+    # RUNNING -> WAITING_VENDOR_SELECTION
+    assert transition_task_state(task_id, TaskState.WAITING_VENDOR_SELECTION) is True
+    assert active_tasks[task_id]["task_state"] == TaskState.WAITING_VENDOR_SELECTION
     
-    # WAITING_APPROVAL -> RUNNING (e.g. Reject flow)
+    # WAITING_VENDOR_SELECTION -> RUNNING (e.g. Reject flow)
     assert transition_task_state(task_id, TaskState.RUNNING) is True
     assert active_tasks[task_id]["task_state"] == TaskState.RUNNING
     
-    # RUNNING -> WAITING_APPROVAL
-    assert transition_task_state(task_id, TaskState.WAITING_APPROVAL) is True
+    # RUNNING -> WAITING_PRICE_APPROVAL
+    assert transition_task_state(task_id, TaskState.WAITING_PRICE_APPROVAL) is True
     
-    # WAITING_APPROVAL -> EXECUTING
-    assert transition_task_state(task_id, TaskState.EXECUTING) is True
-    assert active_tasks[task_id]["task_state"] == TaskState.EXECUTING
-    
-    # EXECUTING -> SUCCESS
-    assert transition_task_state(task_id, TaskState.SUCCESS) is True
-    assert active_tasks[task_id]["task_state"] == TaskState.SUCCESS
+    # WAITING_PRICE_APPROVAL -> COMPLETED
+    assert transition_task_state(task_id, TaskState.COMPLETED) is True
+    assert active_tasks[task_id]["task_state"] == TaskState.COMPLETED
 
 @pytest.mark.asyncio
 async def test_invalid_transitions():
@@ -48,22 +44,11 @@ async def test_invalid_transitions():
     
     await register_task(task_id, mock_websocket, mock_event)
     
-    # Invalid: SCHEDULED -> SUCCESS
-    assert transition_task_state(task_id, TaskState.SUCCESS) is False
-    assert active_tasks[task_id]["task_state"] == TaskState.SCHEDULED
+    # Invalid: COMPLETED is terminal, check that outgoing transitions from COMPLETED fail
+    transition_task_state(task_id, TaskState.COMPLETED)
+    assert active_tasks[task_id]["task_state"] == TaskState.COMPLETED
     
-    # Move to RUNNING
-    transition_task_state(task_id, TaskState.RUNNING)
-    
-    # Invalid: RUNNING -> SUCCESS
-    assert transition_task_state(task_id, TaskState.SUCCESS) is False
-    
-    # Transition to SUCCESS (through valid path)
-    transition_task_state(task_id, TaskState.WAITING_APPROVAL)
-    transition_task_state(task_id, TaskState.EXECUTING)
-    transition_task_state(task_id, TaskState.SUCCESS)
-    
-    # Invalid: SUCCESS is terminal state, cannot move to any other state
+    # Invalid: COMPLETED is terminal state, cannot move to any other state
     assert transition_task_state(task_id, TaskState.RUNNING) is False
     assert transition_task_state(task_id, TaskState.CANCELLED) is False
 

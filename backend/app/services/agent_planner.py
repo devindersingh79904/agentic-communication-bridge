@@ -59,6 +59,215 @@ class AgentPlanner:
             logger.warning(f"Failed to detect category for prompt via LLM: {e}")
         return "computer"
 
+    async def decide_next_action(self, state: WorkflowState) -> Dict[str, Any]:
+        """
+        Agentic Decision Engine: Dynamically determines the next action based on current state,
+        constraints, and user feedback history.
+        """
+        import json
+        import re
+        from app.core.enums import TaskState, ApprovalAction
+        
+        logger.info(f"Decision Engine: Evaluating next action. Current state step: {state.current_step}")
+        
+        # Rule-based fast paths to avoid unnecessary LLM latency for standard state transitions
+        if state.current_step == TaskState.SCHEDULED:
+            return {
+                "next_action": "vendor_search",
+                "reason": "Task scheduled, starting vendor research.",
+                "parameters": {}
+            }
+            
+        # If we just completed searching vendors and AUTO_APPROVE is false, we must wait for selection
+        if state.current_step == TaskState.SEARCHING_VENDORS:
+            from app.core import config
+            if config.AUTO_APPROVE:
+                vendors = state.research_data.get("vendors", []) if state.research_data else []
+                state.selected_vendors = vendors
+                return {
+                    "next_action": "pricing_analysis",
+                    "reason": "Auto-approve is enabled. Proceeding directly to pricing analysis.",
+                    "parameters": {}
+                }
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Awaiting human vendor selection and feedback.",
+                    "parameters": {"step": "vendor_selection"}
+                }
+                
+        # If we are waiting for vendor selection and received approval/selection
+        if state.current_step == TaskState.WAITING_VENDOR_SELECTION:
+            if state.approval_action == ApprovalAction.APPROVE:
+                return {
+                    "next_action": "pricing_analysis",
+                    "reason": "Human approved vendor selection. Proceeding to pricing analysis.",
+                    "parameters": {}
+                }
+            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
+                pass
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Still waiting for human vendor selection.",
+                    "parameters": {"step": "vendor_selection"}
+                }
+                
+        # If we completed pricing analysis
+        if state.current_step == TaskState.ANALYZING_PRICING:
+            from app.core import config
+            if config.AUTO_APPROVE:
+                return {
+                    "next_action": "draft_outreach",
+                    "reason": "Auto-approve enabled. Proceeding to outreach drafting.",
+                    "parameters": {}
+                }
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Awaiting human approval of selected vendor and pricing analysis.",
+                    "parameters": {"step": "price_approval"}
+                }
+                
+        # If we are waiting for pricing approval
+        if state.current_step == TaskState.WAITING_PRICE_APPROVAL:
+            if state.approval_action == ApprovalAction.APPROVE:
+                return {
+                    "next_action": "draft_outreach",
+                    "reason": "Pricing selection approved. Proceeding to drafting.",
+                    "parameters": {}
+                }
+            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
+                pass
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Still waiting for human pricing approval.",
+                    "parameters": {"step": "price_approval"}
+                }
+                
+        # After drafting outreach, we always run self-reflection immediately
+        if state.current_step == TaskState.DRAFTING_OUTREACH:
+            return {
+                "next_action": "self_reflection",
+                "reason": "Outreach draft generated. Initiating self-reflection audit.",
+                "parameters": {}
+            }
+            
+        # After self-reflection completes
+        if state.current_step == TaskState.SELF_REFLECTION:
+            from app.core import config
+            reflection = state.reflection_metadata or {}
+            score_passed = reflection.get("tone_check_passed", True) and reflection.get("hallucination_free", True) and reflection.get("formatting_valid", True)
+            
+            if not score_passed and state.regeneration_count < config.MAX_REGENERATION_ATTEMPTS:
+                state.regeneration_count += 1
+                state.rejection_feedback = f"Self-reflection critique: {reflection.get('critique', 'Polishing needed.')}"
+                return {
+                    "next_action": "draft_outreach",
+                    "reason": f"Self-reflection quality checks failed. Regenerating draft (Attempt {state.regeneration_count}/{config.MAX_REGENERATION_ATTEMPTS}).",
+                    "parameters": {}
+                }
+                
+            if config.AUTO_APPROVE:
+                return {
+                    "next_action": "execute_outreach",
+                    "reason": "Auto-approve enabled. Proceeding to outreach execution.",
+                    "parameters": {}
+                }
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Awaiting human final approval of the outreach proposal.",
+                    "parameters": {"step": "final_approval"}
+                }
+                
+        # If waiting for final approval
+        if state.current_step == TaskState.WAITING_FINAL_APPROVAL:
+            if state.approval_action == ApprovalAction.APPROVE:
+                return {
+                    "next_action": "execute_outreach",
+                    "reason": "Outreach proposal approved. Proceeding to final execution.",
+                    "parameters": {}
+                }
+            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
+                pass
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Still waiting for human final approval.",
+                    "parameters": {"step": "final_approval"}
+                }
+                
+        if state.current_step == TaskState.COMPLETED or state.execution_result:
+            return {
+                "next_action": "complete",
+                "reason": "Task successfully executed and completed.",
+                "parameters": {}
+            }
+
+        # --- LLM Dynamic Replanning Fallback ---
+        logger.info("Decision Engine: Invoking LLM Planner to evaluate feedback and replan.")
+        
+        system_prompt = (
+            "You are the Core Decision Engine/Planner of a human-in-the-loop procurement agent.\n"
+            "Given the user's original prompt, current constraints, candidate vendors, selected vendor, "
+            "feedback history, and the latest user feedback/rejection action, decide the best next action.\n\n"
+            "Available Actions:\n"
+            "- 'vendor_search': Re-run semantic RAG vendor search with updated constraints.\n"
+            "- 'pricing_analysis': Select/analyze vendor pricing based on selected vendors.\n"
+            "- 'draft_outreach': Re-generate outreach email using feedback details.\n"
+            "- 'self_reflection': Re-run self-reflection check on draft.\n"
+            "- 'wait_for_human': Pause and request human input (params: 'step': 'vendor_selection', 'price_approval', 'final_approval').\n\n"
+            "Return ONLY a JSON object of this structure:\n"
+            "{\n"
+            '  "next_action": "vendor_search" | "pricing_analysis" | "draft_outreach" | "wait_for_human",\n'
+            '  "reason": "<detailed rationale for this decision>",\n'
+            '  "parameters": {\n'
+            '     "step": "<if wait_for_human, specifies step>",\n'
+            '     "updated_constraints": {"budget": "low/high", "delivery": "fast", "location": "<preferred city/locality>"}\n'
+            '  }\n'
+            "}\n"
+            "Do not output markdown code fences or any other text."
+        )
+        
+        user_content = (
+            f"Original Prompt: {state.prompt}\n"
+            f"Current Step: {state.current_step.value}\n"
+            f"Current Constraints: {json.dumps(state.constraints)}\n"
+            f"Feedback History: {json.dumps(state.feedback_history)}\n"
+            f"Latest Feedback: {state.rejection_feedback}\n"
+            f"Latest Action: {state.approval_action.value if state.approval_action else 'None'}\n"
+            f"Discovered Vendors: {json.dumps(state.research_data.get('vendors') if state.research_data else [])}\n"
+            f"Selected Vendor: {json.dumps(state.selected_vendor)}\n"
+            f"Outreach Draft: {state.improved_draft or state.draft}\n\n"
+            f"Evaluate the feedback. If the user wants different options, cheaper price, faster delivery, or a specific city, "
+            f"output 'vendor_search' and specify the 'updated_constraints'. If they want to modify the draft wording, "
+            f"output 'draft_outreach'."
+        )
+        
+        try:
+            raw_decision = await _llm_call("planner_decide_next_action", system_prompt, user_content, max_tokens=300)
+            json_match = re.search(r'\{.*\}', raw_decision, re.DOTALL)
+            if json_match:
+                raw_decision = json_match.group(0)
+            decision = json.loads(raw_decision)
+            
+            params = decision.get("parameters", {})
+            if "updated_constraints" in params:
+                state.constraints.update(params["updated_constraints"])
+                logger.info(f"Decision Engine updated constraints: {state.constraints}")
+                
+            return decision
+        except Exception as e:
+            logger.error(f"Decision Engine: LLM call failed, falling back to safe recovery transition: {e}")
+            if state.current_step == TaskState.WAITING_VENDOR_SELECTION:
+                return {"next_action": "vendor_search", "reason": "Fallback: search again.", "parameters": {}}
+            elif state.current_step == TaskState.WAITING_PRICE_APPROVAL:
+                return {"next_action": "vendor_search", "reason": "Fallback: return to search.", "parameters": {}}
+            else:
+                return {"next_action": "draft_outreach", "reason": "Fallback: rewrite outreach.", "parameters": {}}
+
     async def run_research(self, state: WorkflowState, task_id: str, transition_callback) -> None:
         """
         Executes internal RAG search. If confidence is low or query explicitly asks for web search,

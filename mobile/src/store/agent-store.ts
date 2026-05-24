@@ -67,7 +67,7 @@ interface AgentState {
   // Web socket controller actions
   connectWebSocket: (prompt: string) => void;
   disconnectWebSocket: () => void;
-  sendApprovalResponse: (action: ApprovalAction, feedback?: string) => void;
+  sendApprovalResponse: (action: ApprovalAction, feedback?: string, selectedVendors?: VendorResult[]) => void;
   sendStop: () => void;
   resetStore: (clearMessages?: boolean) => void;
 }
@@ -259,7 +259,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendApprovalResponse: (action, feedback) => {
+  sendApprovalResponse: (action, feedback, selectedVendors) => {
     const { socket, taskId, correlationId, currentPendingStep } = get();
     set({ isAwaitingApproval: false });
 
@@ -269,7 +269,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       : 'step';
 
     if (action === 'APPROVE') {
-      if (feedbackMessage) {
+      if (selectedVendors && selectedVendors.length > 0) {
+        const names = selectedVendors.map(v => v.vendor_name || v.name).join(', ');
+        get().appendMessage({
+          sender: 'user',
+          text: `✅ Approved selection of: ${names}. Proceeding.`,
+        });
+      } else if (feedbackMessage) {
         get().appendMessage({
           sender: 'user',
           text: `✅ Approved ${stepLabel} with feedback: "${feedbackMessage}"`,
@@ -309,6 +315,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           feedback: feedbackMessage || undefined,
           task_id: taskId,
           correlation_id: correlationId,
+          selected_vendors: selectedVendors || undefined,
         })
       );
     }

@@ -77,6 +77,23 @@ export const AgentScreen = () => {
   // Modify draft request states
   const [isModifyMode, setIsModifyMode] = useState(false);
   const [modifyFeedback, setModifyFeedback] = useState('');
+  const [selectedCards, setSelectedCards] = useState<VendorResult[]>([]);
+
+  const handleToggleCard = (vendor: VendorResult) => {
+    if (taskState === 'WAITING_VENDOR_SELECTION') {
+      setSelectedCards((prev) => {
+        const vendorId = vendor.vendor_name || vendor.name;
+        const exists = prev.some((v) => (v.vendor_name || v.name) === vendorId);
+        if (exists) {
+          return prev.filter((v) => (v.vendor_name || v.name) !== vendorId);
+        } else {
+          return [...prev, vendor];
+        }
+      });
+    } else if (taskState === 'WAITING_PRICE_APPROVAL') {
+      setSelectedCards([vendor]);
+    }
+  };
 
   const flatListRef = useRef<FlatList>(null);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -86,15 +103,30 @@ export const AgentScreen = () => {
     fetchMetadataEnums();
   }, []);
 
+  // Sync selected cards with active HITL step state
+  useEffect(() => {
+    if (taskState === 'WAITING_VENDOR_SELECTION') {
+      setSelectedCards(vendorResults);
+    } else if (taskState === 'WAITING_PRICE_APPROVAL') {
+      setSelectedCards(selectedVendor ? [selectedVendor] : []);
+    } else {
+      setSelectedCards([]);
+    }
+  }, [vendorResults, selectedVendor, taskState]);
+
   // Auto-switch tabs based on workflow progression to wow the user
   useEffect(() => {
     if (currentAgentStep === 'SEARCHING_VENDORS' || currentAgentStep === 'ANALYZING_PRICING') {
       setActiveTab('vendors');
     } else if (currentAgentStep === 'SELF_REFLECTION') {
       setActiveTab('audit');
-    } else if (taskState === 'WAITING_APPROVAL') {
-      setActiveTab('audit');
-    } else if (taskState === 'SUCCESS' || taskState === 'EXECUTING') {
+    } else if (taskState && taskState.startsWith('WAITING_')) {
+      if (taskState === 'WAITING_VENDOR_SELECTION' || taskState === 'WAITING_PRICE_APPROVAL') {
+        setActiveTab('vendors');
+      } else {
+        setActiveTab('audit');
+      }
+    } else if (taskState === 'SUCCESS' || taskState === 'COMPLETED' || taskState === 'EXECUTING') {
       setActiveTab('logs');
     }
   }, [currentAgentStep, taskState]);
@@ -124,7 +156,13 @@ export const AgentScreen = () => {
   };
 
   const handleApprove = () => {
-    sendApprovalResponse('APPROVE');
+    if (taskState === 'WAITING_VENDOR_SELECTION') {
+      sendApprovalResponse('APPROVE', undefined, selectedCards);
+    } else if (taskState === 'WAITING_PRICE_APPROVAL') {
+      sendApprovalResponse('APPROVE', undefined, selectedCards);
+    } else {
+      sendApprovalResponse('APPROVE');
+    }
   };
 
   const handleReject = () => {
@@ -191,11 +229,16 @@ export const AgentScreen = () => {
       return { container: styles.stepInactive, text: styles.stepTextInactive };
     }
     // If waiting for approval, highlight the pending step
-    if (taskState === 'WAITING_APPROVAL') {
-      if (stepId === currentPendingStep) {
+    if (taskState && (taskState === 'WAITING_APPROVAL' || taskState.startsWith('WAITING_'))) {
+      const pendingStep = currentPendingStep || (
+        taskState === 'WAITING_VENDOR_SELECTION' ? 'SEARCHING_VENDORS' :
+        taskState === 'WAITING_PRICE_APPROVAL' ? 'ANALYZING_PRICING' :
+        taskState === 'WAITING_FINAL_APPROVAL' ? 'SELF_REFLECTION' : null
+      );
+      if (stepId === pendingStep) {
         return { container: styles.stepPending, text: styles.stepTextActive };
       }
-      const pendingIndex = stepsToRender.findIndex((s) => s.id === currentPendingStep);
+      const pendingIndex = stepsToRender.findIndex((s) => s.id === pendingStep);
       if (stepIndex < pendingIndex && pendingIndex !== -1) {
         return { container: styles.stepCompleted, text: styles.stepTextCompleted };
       }
@@ -292,8 +335,15 @@ export const AgentScreen = () => {
 
   const renderVendorCard = (vendor: VendorResult, isSelected = false) => {
     const sourceDetails = getSourceBadgeDetails(vendor.source_type);
+    const isInteractive = taskState === 'WAITING_VENDOR_SELECTION' || taskState === 'WAITING_PRICE_APPROVAL';
     return (
-      <View key={vendor.vendor_name || vendor.name} style={[styles.vendorCard, isSelected && styles.vendorCardSelected]}>
+      <TouchableOpacity
+        key={vendor.vendor_name || vendor.name}
+        onPress={() => handleToggleCard(vendor)}
+        disabled={!isInteractive}
+        activeOpacity={isInteractive ? 0.7 : 1}
+        style={[styles.vendorCard, isSelected && styles.vendorCardSelected]}
+      >
         <View style={styles.vendorCardHeader}>
           <View style={{ flex: 1 }}>
             <Text style={styles.vendorName}>{vendor.vendor_name || vendor.name}</Text>
@@ -322,7 +372,7 @@ export const AgentScreen = () => {
         <View style={styles.catalogDivider} />
         <Text style={styles.catalogHeader}>Catalog Items</Text>
         {renderVendorCatalog(vendor)}
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -520,13 +570,28 @@ export const AgentScreen = () => {
               <View style={styles.pricingAnalysisContainer}>
                 <Text style={styles.dashboardSectionHeader}>📊 Pricing & Sourcing Evaluation</Text>
                 <View style={styles.pricingCard}>
-                  {selectedVendor && (
-                    <View style={styles.recommendationBadge}>
-                      <Text style={styles.recommendationBadgeText}>
-                        ⭐️ Selected Vendor: {selectedVendor.vendor_name || selectedVendor.name}
-                      </Text>
-                    </View>
-                  )}
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+                    {selectedCards.length > 0 ? (
+                      <View style={styles.recommendationBadge}>
+                        <Text style={styles.recommendationBadgeText}>
+                          ⭐️ Selected: {selectedCards.map(c => c.vendor_name || c.name).join(', ')}
+                        </Text>
+                      </View>
+                    ) : selectedVendor ? (
+                      <View style={styles.recommendationBadge}>
+                        <Text style={styles.recommendationBadgeText}>
+                          ⭐️ Recommended Vendor: {selectedVendor.vendor_name || selectedVendor.name}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {pricingAnalysis.confidence !== undefined && (
+                      <View style={styles.confidenceScoreBadge}>
+                        <Text style={styles.confidenceScoreBadgeText}>
+                          Confidence: {(pricingAnalysis.confidence * 100).toFixed(0)}%
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                   <Text style={styles.analysisSummaryText}>{pricingAnalysis.summary}</Text>
                   
                   {pricingAnalysis.reasoning && pricingAnalysis.reasoning.length > 0 && (
@@ -550,8 +615,10 @@ export const AgentScreen = () => {
             ) : (
               <View style={styles.vendorsList}>
                 {vendorResults.map((v) => {
-                  const isRec = selectedVendor && (selectedVendor.vendor_name === v.vendor_name || selectedVendor.name === v.name);
-                  return renderVendorCard(v, !!isRec);
+                  const isSelected = selectedCards.length > 0
+                    ? selectedCards.some((sc) => (sc.vendor_name || sc.name) === (v.vendor_name || v.name))
+                    : (selectedVendor && (selectedVendor.vendor_name === v.vendor_name || selectedVendor.name === v.name));
+                  return renderVendorCard(v, !!isSelected);
                 })}
               </View>
             )}
@@ -640,7 +707,9 @@ export const AgentScreen = () => {
                 {getStepHeaderIcon()} WAITING FOR APPROVAL — {getStepHeaderLabel().toUpperCase()}
               </Text>
               <Text style={styles.waitingApprovalSubtitle}>
-                Review audit scores and generated draft below:
+                {taskState === 'WAITING_VENDOR_SELECTION' ? 'Select candidates in the Vendors tab above, then approve:' :
+                 taskState === 'WAITING_PRICE_APPROVAL' ? 'Review recommended vendor in the Vendors tab, tap any vendor card to override, then approve:' :
+                 'Review audit scores and generated draft in the Audit & Draft tab, then approve:'}
               </Text>
             </View>
             

@@ -76,6 +76,7 @@ class ApprovalResponseEvent(BaseWebSocketEvent):
     event_type: WebSocketEventType = WebSocketEventType.APPROVAL_RESPONSE
     action: ApprovalAction
     feedback: Optional[str] = None
+    selected_vendors: Optional[List[Dict[str, Any]]] = None
 
 class StopEvent(BaseWebSocketEvent):
     """

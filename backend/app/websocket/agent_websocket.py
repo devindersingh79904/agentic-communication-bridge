@@ -101,15 +101,37 @@ async def websocket_endpoint(websocket: WebSocket):
             if event_type == WebSocketEventType.START_TASK:
                 if orchestration_started:
                     continue
-                raw_prompt = payload.get("prompt", "")
-                prompt = raw_prompt.strip()
-                if not prompt:
-                    continue
                 
-                # Optimistic Task persistence
-                task_repo.create_task(task_id, "SCHEDULED", prompt)
+                # Check for task resumption / reconnection
+                client_task_id = payload.get("task_id")
+                if client_task_id:
+                    existing_task = task_repo.get_task(client_task_id)
+                    if existing_task:
+                        logger.info("Resuming existing task %s from client reconnect", client_task_id)
+                        from app.services.agent_orchestrator_service import _tasks_lock
+                        async with _tasks_lock:
+                            if task_id in active_tasks:
+                                active_info = active_tasks.pop(task_id)
+                                task_id = client_task_id
+                                active_tasks[task_id] = active_info
+                                set_task_id(task_id)
+                        prompt = existing_task.get("user_prompt", "")
+                        state = WorkflowState(prompt=prompt)
+                    else:
+                        raw_prompt = payload.get("prompt", "")
+                        prompt = raw_prompt.strip()
+                        if not prompt:
+                            continue
+                        task_repo.create_task(task_id, "SCHEDULED", prompt)
+                        state = WorkflowState(prompt=prompt)
+                else:
+                    raw_prompt = payload.get("prompt", "")
+                    prompt = raw_prompt.strip()
+                    if not prompt:
+                        continue
+                    task_repo.create_task(task_id, "SCHEDULED", prompt)
+                    state = WorkflowState(prompt=prompt)
                 
-                state = WorkflowState(prompt=prompt)
                 orchestration_task = asyncio.create_task(
                     run_orchestration(websocket, correlation_id, task_id, state)
                 )
@@ -121,7 +143,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     action = ApprovalAction(action_str)
                     task_repo.update_task_approval(task_id, action.value, payload.get("feedback"))
-                    handle_approval_response(task_id, action, payload.get("feedback"))
+                    handle_approval_response(
+                        task_id,
+                        action,
+                        payload.get("feedback"),
+                        selected_vendors=payload.get("selected_vendors")
+                    )
                 except ValueError:
                     logger.warning("Invalid approval action: %s", action_str)
                     
