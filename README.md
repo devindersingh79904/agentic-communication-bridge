@@ -81,6 +81,12 @@ DEFAULT_USER_NAME=Devinder Singh
 DEFAULT_COMPANY_NAME=DSP Technologies
 
 # =========================
+# Agent Provider Selection
+# =========================
+# Set to "openai" to use OpenAI, or "ollama" to use a local Ollama instance
+AGENT_PROVIDER=openai
+
+# =========================
 # OpenAI Configuration
 # =========================
 # Required API Key
@@ -96,6 +102,12 @@ OPENAI_TEMPERATURE=0.3
 REFLECTION_TEMPERATURE=0.6
 
 # =========================
+# Ollama Configuration
+# =========================
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5-coder:7b
+
+# =========================
 # Agent Workflow Configuration
 # =========================
 # Configurable delay in seconds for every workflow step
@@ -106,6 +118,23 @@ AGENT_STEP_DELAY_SECONDS=2
 # =========================
 # Bounded limit for iterative LLM regeneration attempts
 MAX_REGENERATION_ATTEMPTS=3
+
+# =========================
+# Database & RAG Configuration
+# =========================
+DB_PATH=agent_procurement.db
+CHROMA_PERSIST_PATH=./chroma_db
+TAVILY_API_KEY=your_tavily_key
+SERPAPI_API_KEY=your_serpapi_key
+
+# =========================
+# Heartbeat & Retry Policies
+# =========================
+HEARTBEAT_INTERVAL_SECONDS=15
+HEARTBEAT_TIMEOUT_SECONDS=30
+MAX_RETRY_ATTEMPTS=3
+RETRY_INITIAL_DELAY=1.0
+RETRY_BACKOFF_FACTOR=2.0
 ```
 
 ### Mobile Configuration

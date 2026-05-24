@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from pydantic import BaseModel, Field
 from app.core.enums import WebSocketEventType, TaskState, AgentStep, ApprovalAction
@@ -20,6 +20,9 @@ class StatusUpdateEvent(BaseWebSocketEvent):
     task_state: TaskState
     agent_step: AgentStep
     message: str
+    vendors: Optional[List[Dict[str, Any]]] = None
+    selected_vendor: Optional[Dict[str, Any]] = None
+    pricing_analysis: Optional[Dict[str, Any]] = None
 
 class ApprovalRequiredEvent(BaseWebSocketEvent):
     """
@@ -33,6 +36,9 @@ class ApprovalRequiredEvent(BaseWebSocketEvent):
     message: str
     approval_timeout_seconds: Optional[int] = None
     reflection_metadata: Optional[Dict[str, Any]] = None
+    vendors: Optional[List[Dict[str, Any]]] = None
+    selected_vendor: Optional[Dict[str, Any]] = None
+    pricing_analysis: Optional[Dict[str, Any]] = None
 
 class TaskCompletedEvent(BaseWebSocketEvent):
     """
@@ -42,6 +48,9 @@ class TaskCompletedEvent(BaseWebSocketEvent):
     task_state: TaskState
     message: str
     final_response: Optional[str] = None
+    vendors: Optional[List[Dict[str, Any]]] = None
+    selected_vendor: Optional[Dict[str, Any]] = None
+    pricing_analysis: Optional[Dict[str, Any]] = None
 
 class TaskCancelledEvent(BaseWebSocketEvent):
     """

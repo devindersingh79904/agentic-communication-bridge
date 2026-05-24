@@ -84,6 +84,9 @@ def transition_task_state(task_id: str, new_state: TaskState) -> bool:
         return False
         
     current_state = task_info.get("task_state")
+    if current_state == new_state:
+        return True
+        
     allowed = VALID_TRANSITIONS.get(current_state, set())
     if new_state not in allowed:
         logger.warning(
@@ -162,6 +165,11 @@ def handle_approval_response(task_id: str, action: ApprovalAction, feedback: Opt
         workflow_state.rejection_feedback = feedback
 
     logger.info("Approval response received: %s", action)
+    
+    # Transition out of WAITING_APPROVAL immediately to prevent race conditions with clients/tests polling state
+    transition_task_state(task_id, TaskState.RUNNING)
+    task_repo.update_task_status(task_id, TaskState.WAITING_APPROVAL, TaskState.RUNNING)
+    
     approval_event.set()
 
 async def cancel_task(task_id: str) -> None:
@@ -316,17 +324,21 @@ async def _await_step_approval(
     if not task_info:
         logger.warning("Task %s removed during step approval (aborting)", task_id)
         return False
+
+    approval_event = task_info.get("approval_event")
+    if not approval_event:
+        logger.warning("Approval event missing for task %s (aborting)", task_id)
+        return False
+
+    # Clear the approval event and state action before transitioning/waiting
+    approval_event.clear()
+    state.approval_action = None
         
     old_state = task_info.get("task_state")
     if not transition_task_state(task_id, TaskState.WAITING_APPROVAL):
         logger.warning("Aborting: failed to transition to WAITING_APPROVAL for step %s", agent_step)
         return False
     task_repo.update_task_status(task_id, old_state, TaskState.WAITING_APPROVAL)
-
-    approval_event = task_info.get("approval_event")
-    if not approval_event:
-        logger.warning("Approval event missing for task %s (aborting)", task_id)
-        return False
 
     app_req_event = ApprovalRequiredEvent(
         correlation_id=correlation_id,
@@ -337,7 +349,13 @@ async def _await_step_approval(
         step_data=step_data,
         message=message,
         approval_timeout_seconds=config.APPROVAL_TIMEOUT_SECONDS,
-        reflection_metadata=state.reflection_metadata if agent_step == AgentStep.SELF_REFLECTION else None
+        reflection_metadata=state.reflection_metadata if agent_step == AgentStep.SELF_REFLECTION else None,
+        vendors=state.research_data.get("vendors") if state.research_data else None,
+        selected_vendor=state.selected_vendor,
+        pricing_analysis={
+            "summary": state.analysis_summary,
+            "selected_vendor": state.selected_vendor
+        } if state.analysis_summary else None
     )
     await safe_send_json(websocket, app_req_event.model_dump())
 
@@ -415,9 +433,9 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
     corr_token = set_correlation_id(correlation_id)
     task_token = set_task_id(task_id)
     
-    task_entry = active_tasks.get(task_id)
-    if task_entry:
-        task_entry["workflow_state"] = state
+    task_info = active_tasks.get(task_id)
+    if task_info:
+        task_info["workflow_state"] = state
         
     logger.info("Orchestration workflow started with prompt: %.100s", state.prompt)
     
@@ -515,7 +533,8 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 task_id=task_id,
                 task_state=TaskState.RUNNING,
                 agent_step=AgentStep.ANALYZING_PRICING,
-                message="Analyzing catalogs and pricing..."
+                message="Analyzing catalogs and pricing...",
+                vendors=state.research_data.get("vendors") if state.research_data else None
             )
             await safe_send_json(websocket, event.model_dump())
 
@@ -587,7 +606,13 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 task_id=task_id,
                 task_state=TaskState.RUNNING,
                 agent_step=AgentStep.DRAFTING_OUTREACH,
-                message="Drafting outreach communication..."
+                message="Drafting outreach communication...",
+                vendors=state.research_data.get("vendors") if state.research_data else None,
+                selected_vendor=state.selected_vendor,
+                pricing_analysis={
+                    "summary": state.analysis_summary,
+                    "selected_vendor": state.selected_vendor
+                } if state.analysis_summary else None
             )
             await safe_send_json(websocket, event.model_dump())
 
@@ -640,7 +665,13 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 task_id=task_id,
                 task_state=TaskState.RUNNING,
                 agent_step=AgentStep.SELF_REFLECTION,
-                message="Running self-reflection quality audit..."
+                message="Running self-reflection quality audit...",
+                vendors=state.research_data.get("vendors") if state.research_data else None,
+                selected_vendor=state.selected_vendor,
+                pricing_analysis={
+                    "summary": state.analysis_summary,
+                    "selected_vendor": state.selected_vendor
+                } if state.analysis_summary else None
             )
             await safe_send_json(websocket, event.model_dump())
 
@@ -693,7 +724,13 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
             task_id=task_id,
             task_state=TaskState.EXECUTING,
             agent_step=AgentStep.EXECUTING,
-            message="Executing final procurement outreach..."
+            message="Executing final procurement outreach...",
+            vendors=state.research_data.get("vendors") if state.research_data else None,
+            selected_vendor=state.selected_vendor,
+            pricing_analysis={
+                "summary": state.analysis_summary,
+                "selected_vendor": state.selected_vendor
+            } if state.analysis_summary else None
         )
         await safe_send_json(websocket, event.model_dump())
 
@@ -743,7 +780,13 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         task_id=task_id,
                         task_state=TaskState.SUCCESS,
                         message=f"Task successfully completed. Result: {state.execution_result}",
-                        final_response=state.improved_draft or state.draft or ""
+                        final_response=state.improved_draft or state.draft or "",
+                        vendors=state.research_data.get("vendors") if state.research_data else None,
+                        selected_vendor=state.selected_vendor,
+                        pricing_analysis={
+                            "summary": state.analysis_summary,
+                            "selected_vendor": state.selected_vendor
+                        } if state.analysis_summary else None
                     )
                     task_info["terminal_emitted"] = True
                     await safe_send_json(websocket, completed_event.model_dump())

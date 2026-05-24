@@ -4,6 +4,8 @@ export type TaskState =
   | 'IDLE'
   | 'SCHEDULED'
   | 'RUNNING'
+  | 'EXTERNAL_SEARCHING'
+  | 'FAILED_RETRYING'
   | 'WAITING_APPROVAL'
   | 'EXECUTING'
   | 'SUCCESS'
@@ -21,6 +23,36 @@ export interface BaseWebSocketEvent {
   event_type: string;
   correlation_id: string;
   task_id?: string;
+  timestamp?: string;
+}
+
+export interface VendorResult {
+  vendor_name?: string;
+  name?: string;
+  category?: string;
+  rating?: number | string;
+  delivery_days?: number;
+  location?: string;
+  confidence_score?: number;
+  score?: number;
+  source_type?: 'internal' | 'external' | string;
+  catalog?: Record<string, string | number>;
+  items?: Record<string, string | number>;
+  catalog_items?: any;
+}
+
+export interface PricingAnalysis {
+  summary?: string;
+  selected_vendor?: VendorResult;
+  reasoning?: string[];
+}
+
+export interface ReflectionMetadata {
+  tone_check_passed: boolean;
+  hallucination_free: boolean;
+  formatting_valid: boolean;
+  confidence_score: number;
+  critique: string;
 }
 
 export interface StatusUpdateEvent extends BaseWebSocketEvent {
@@ -28,6 +60,9 @@ export interface StatusUpdateEvent extends BaseWebSocketEvent {
   task_state: TaskState;
   agent_step: AgentStep;
   message: string;
+  vendors?: VendorResult[];
+  selected_vendor?: VendorResult;
+  pricing_analysis?: PricingAnalysis;
 }
 
 export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
@@ -38,6 +73,10 @@ export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
   step_data?: string;
   message: string;
   approval_timeout_seconds?: number;
+  reflection_metadata?: ReflectionMetadata;
+  vendors?: VendorResult[];
+  selected_vendor?: VendorResult;
+  pricing_analysis?: PricingAnalysis;
 }
 
 export interface TaskCompletedEvent extends BaseWebSocketEvent {
@@ -45,6 +84,9 @@ export interface TaskCompletedEvent extends BaseWebSocketEvent {
   task_state: 'SUCCESS';
   message: string;
   final_response?: string;
+  vendors?: VendorResult[];
+  selected_vendor?: VendorResult;
+  pricing_analysis?: PricingAnalysis;
 }
 
 export interface TaskCancelledEvent extends BaseWebSocketEvent {
@@ -60,14 +102,24 @@ export interface ErrorEvent extends BaseWebSocketEvent {
   message: string;
 }
 
+export interface PingEvent extends BaseWebSocketEvent {
+  event_type: 'PING';
+}
+
+export interface PongEvent extends BaseWebSocketEvent {
+  event_type: 'PONG';
+}
+
 export type ServerEvent =
   | StatusUpdateEvent
   | ApprovalRequiredEvent
   | TaskCompletedEvent
   | TaskCancelledEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | PingEvent
+  | PongEvent;
 
-export type ApprovalAction = 'APPROVE' | 'REJECT';
+export type ApprovalAction = 'APPROVE' | 'REJECT' | 'MODIFY_REQUEST';
 
 export interface ClientStartTaskEvent {
   event_type: 'START_TASK';
@@ -88,7 +140,17 @@ export interface ClientStopEvent {
   task_id: string;
 }
 
-export type ClientEvent = ClientStartTaskEvent | ClientApprovalResponseEvent | ClientStopEvent;
+export interface ClientPongEvent {
+  event_type: 'PONG';
+  correlation_id: string;
+  task_id: string;
+}
+
+export type ClientEvent =
+  | ClientStartTaskEvent
+  | ClientApprovalResponseEvent
+  | ClientStopEvent
+  | ClientPongEvent;
 
 export interface Message {
   id: string;
@@ -96,4 +158,13 @@ export interface Message {
   text: string;
   timestamp: Date;
   agent_step?: AgentStep;
+}
+
+export interface TaskHistoryItem {
+  task_id: string;
+  prompt: string;
+  status: TaskState;
+  timestamp: Date;
+  selected_vendor?: VendorResult;
+  final_response?: string;
 }

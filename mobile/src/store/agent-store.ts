@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ConnectionStatus, TaskState, AgentStep, Message, ApprovalAction } from '../types/websocket';
+import { ConnectionStatus, TaskState, AgentStep, Message, ApprovalAction, VendorResult, PricingAnalysis, ReflectionMetadata, TaskHistoryItem } from '../types/websocket';
 import { getCleanHost, HTTP_BASE_URL } from '../constants/config';
 import { CLIENT_EVENTS } from '../constants/websocket-events';
 
@@ -22,10 +22,17 @@ interface AgentState {
   correlationId: string | null;
   backendSteps: AgentStep[];
   cancellationReason: string | null;
-
-  // Multi-step approval fields
   currentPendingStep: AgentStep | null;
   currentStepData: string | null;
+
+  // New states
+  taskHistory: TaskHistoryItem[];
+  vendorResults: VendorResult[];
+  selectedVendor: VendorResult | null;
+  pricingAnalysis: PricingAnalysis | null;
+  reflectionMetadata: ReflectionMetadata | null;
+  confidenceScore: number | null;
+  lastActivityTime: number;
 
   // Actions
   setHostUrl: (url: string) => void;
@@ -46,6 +53,16 @@ interface AgentState {
   fetchMetadataEnums: () => Promise<void>;
   setCurrentPendingStep: (step: AgentStep | null) => void;
   setCurrentStepData: (data: string | null) => void;
+
+  // New actions
+  setVendorResults: (vendors: VendorResult[]) => void;
+  setSelectedVendor: (vendor: VendorResult | null) => void;
+  setPricingAnalysis: (analysis: PricingAnalysis | null) => void;
+  setReflectionMetadata: (metadata: ReflectionMetadata | null) => void;
+  setConfidenceScore: (score: number | null) => void;
+  updateLastActivity: () => void;
+  addToHistory: (item: TaskHistoryItem) => void;
+  updateHistoryItem: (taskId: string, updates: Partial<TaskHistoryItem>) => void;
 
   // Web socket controller actions
   connectWebSocket: (prompt: string) => void;
@@ -76,15 +93,33 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   currentPendingStep: null,
   currentStepData: null,
 
+  // Initial new states
+  taskHistory: [],
+  vendorResults: [],
+  selectedVendor: null,
+  pricingAnalysis: null,
+  reflectionMetadata: null,
+  confidenceScore: null,
+  lastActivityTime: Date.now(),
+
   setCurrentPendingStep: (currentPendingStep) => set({ currentPendingStep }),
   setCurrentStepData: (currentStepData) => set({ currentStepData }),
 
   setHostUrl: (hostUrl) => set({ hostUrl }),
   setSocket: (socket) => set({ socket }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
-  updateTaskState: (taskState) => set({ taskState }),
+  
+  updateTaskState: (taskState) => {
+    set({ taskState });
+    const { taskId } = get();
+    if (taskId) {
+      get().updateHistoryItem(taskId, { status: taskState });
+    }
+  },
+
   setCurrentAgentStep: (currentAgentStep) => set({ currentAgentStep }),
   setCurrentPrompt: (currentPrompt) => set({ currentPrompt }),
+  
   appendMessage: (msg) =>
     set((state) => {
       // Prevent duplicate system/status messages (consecutive-only)
@@ -105,6 +140,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         ],
       };
     }),
+
   setDraftMessage: (draftMessage) => set({ draftMessage }),
   setIsAwaitingApproval: (isAwaitingApproval) => set({ isAwaitingApproval }),
   setRejectionFeedback: (rejectionFeedback) => set({ rejectionFeedback }),
@@ -114,8 +150,54 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       timeoutCountdown: typeof update === 'function' ? update(state.timeoutCountdown) : update,
     })),
   setError: (error) => set({ error }),
-  setIds: (taskId, correlationId) => set({ taskId, correlationId }),
+
+  setIds: (taskId, correlationId) =>
+    set((state) => {
+      const prevTaskId = state.taskId;
+      let newHistory = state.taskHistory;
+      if (prevTaskId && prevTaskId.startsWith('task-opt-') && taskId) {
+        newHistory = state.taskHistory.map((item) =>
+          item.task_id === prevTaskId ? { ...item, task_id: taskId } : item
+        );
+      }
+      return {
+        taskId,
+        correlationId,
+        taskHistory: newHistory,
+      };
+    }),
+
   setCancellationReason: (cancellationReason) => set({ cancellationReason }),
+
+  // New state setters
+  setVendorResults: (vendorResults) => set({ vendorResults }),
+  setSelectedVendor: (selectedVendor) => set({ selectedVendor }),
+  setPricingAnalysis: (pricingAnalysis) => set({ pricingAnalysis }),
+  setReflectionMetadata: (reflectionMetadata) => {
+    set({ reflectionMetadata });
+    if (reflectionMetadata && reflectionMetadata.confidence_score !== undefined) {
+      set({ confidenceScore: reflectionMetadata.confidence_score });
+    }
+  },
+  setConfidenceScore: (confidenceScore) => set({ confidenceScore }),
+  updateLastActivity: () => set({ lastActivityTime: Date.now() }),
+
+  addToHistory: (item) =>
+    set((state) => {
+      // Prevent duplicates in history
+      const exists = state.taskHistory.some((h) => h.task_id === item.task_id);
+      if (exists) return {};
+      return {
+        taskHistory: [item, ...state.taskHistory],
+      };
+    }),
+
+  updateHistoryItem: (taskId, updates) =>
+    set((state) => ({
+      taskHistory: state.taskHistory.map((item) =>
+        item.task_id === taskId ? { ...item, ...updates } : item
+      ),
+    })),
 
   fetchMetadataEnums: async () => {
     const baseUrl = HTTP_BASE_URL;
@@ -140,14 +222,24 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return;
     }
 
-    // Reset previous session state but preserve hostUrl and backendSteps
+    // Reset previous session state but preserve hostUrl, backendSteps, and taskHistory
+    const existingHistory = get().taskHistory;
     get().resetStore(true);
+    set({ taskHistory: existingHistory });
 
     // Store the current prompt
     set({ currentPrompt: prompt });
 
-    // Optimistic UI: immediately set SCHEDULED state
-    set({ taskState: 'SCHEDULED' });
+    // Optimistic UI: immediately set SCHEDULED state and create task ID
+    const tempTaskId = `task-opt-${Math.random().toString(36).slice(2, 11)}`;
+    set({ taskState: 'SCHEDULED', taskId: tempTaskId });
+
+    get().addToHistory({
+      task_id: tempTaskId,
+      prompt: prompt,
+      status: 'SCHEDULED',
+      timestamp: new Date(),
+    });
 
     get().appendMessage({
       sender: 'user',
@@ -178,7 +270,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     if (action === 'APPROVE') {
       if (feedbackMessage) {
-        // Show user's approval + feedback as a chat bubble
         get().appendMessage({
           sender: 'user',
           text: `✅ Approved ${stepLabel} with feedback: "${feedbackMessage}"`,
@@ -201,6 +292,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           text: `❌ Rejected ${stepLabel}. Re-running.`,
         });
       }
+      set({ isRegenerating: true });
+    } else if (action === 'MODIFY_REQUEST') {
+      get().appendMessage({
+        sender: 'user',
+        text: `✍️ Requested Draft Modifications: "${feedbackMessage}"`,
+      });
       set({ isRegenerating: true });
     }
 
@@ -229,6 +326,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       timeoutCountdown: null,
     });
 
+    if (taskId) {
+      get().updateHistoryItem(taskId, { status: 'CANCELLED' });
+    }
+
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
@@ -237,7 +338,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           correlation_id: correlationId,
         })
       );
-      // Prevent repeated STOP spam by closing socket immediately
       socket.close();
     }
   },
@@ -262,10 +362,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       error: null,
       taskId: null,
       correlationId: null,
-      backendSteps: [],
       cancellationReason: null,
       currentPendingStep: null,
       currentStepData: null,
+      
+      // Reset new states
+      vendorResults: [],
+      selectedVendor: null,
+      pricingAnalysis: null,
+      reflectionMetadata: null,
+      confidenceScore: null,
     }));
   },
 }));
