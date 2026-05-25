@@ -101,7 +101,7 @@ export const AgentScreen = () => {
       setActiveTab('audit');
     } else if (taskState && taskState.startsWith('WAITING_')) {
       setActiveTab('audit');
-    } else if (taskState === 'SUCCESS' || taskState === 'COMPLETED' || taskState === 'EXECUTING') {
+    } else if (taskState === 'COMPLETED' || currentAgentStep === 'EXECUTING') {
       setActiveTab('logs');
     }
   }, [currentAgentStep, taskState]);
@@ -182,14 +182,14 @@ export const AgentScreen = () => {
     const activeIndex = stepsToRender.findIndex((s) => s.id === currentAgentStep);
     const stepIndex = stepsToRender.findIndex((s) => s.id === stepId);
 
-    if (taskState === 'SUCCESS') {
+    if (taskState === 'COMPLETED') {
       return { container: styles.stepCompleted, text: styles.stepTextCompleted };
     }
     if (taskState === 'CANCELLED' || taskState === 'FAILED') {
       return { container: styles.stepInactive, text: styles.stepTextInactive };
     }
     // If waiting for approval, highlight the pending step
-    if (taskState && (taskState === 'WAITING_APPROVAL' || taskState.startsWith('WAITING_'))) {
+    if (taskState && (taskState === 'WAITING_FINAL_APPROVAL' || taskState.startsWith('WAITING_'))) {
       const pendingStep = currentPendingStep || (
         taskState === 'WAITING_FINAL_APPROVAL' ? 'SELF_REFLECTION' : null
       );
@@ -202,7 +202,7 @@ export const AgentScreen = () => {
       }
       return { container: styles.stepInactive, text: styles.stepTextInactive };
     }
-    if (taskState === 'EXECUTING') {
+    if (currentAgentStep === 'EXECUTING') {
       return { container: styles.stepCompleted, text: styles.stepTextCompleted };
     }
 
@@ -350,7 +350,7 @@ export const AgentScreen = () => {
           <Text style={styles.historyTime} numberOfLines={1}>
             {new Date(item.timestamp).toLocaleDateString()} {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </Text>
-          <View style={[styles.statusBadge, item.status === 'SUCCESS' ? styles.statusBadgeSuccess : styles.statusBadgeFail]}>
+          <View style={[styles.statusBadge, item.status === 'COMPLETED' ? styles.statusBadgeSuccess : styles.statusBadgeFail]}>
             <Text style={styles.statusBadgeText}>{item.status}</Text>
           </View>
         </View>
@@ -765,12 +765,12 @@ export const AgentScreen = () => {
             </TouchableOpacity>
           </View>
         ) : (
-          !isAwaitingApproval && taskState !== 'SUCCESS' && taskState !== 'CANCELLED' && taskState !== 'FAILED' && (
+          !isAwaitingApproval && taskState !== 'COMPLETED' && taskState !== 'CANCELLED' && taskState !== 'FAILED' && (
             <View style={styles.runningContainer}>
               <View style={styles.loaderRow}>
                 <ActivityIndicator size="small" color="#60A5FA" />
                 <Text style={styles.runningText}>
-                  {taskState === 'EXECUTING' ? 'Executing approved outreach...' : 'Agent processing steps...'}
+                  {currentAgentStep === 'EXECUTING' ? 'Executing approved outreach...' : 'Agent processing steps...'}
                 </Text>
               </View>
               <TouchableOpacity

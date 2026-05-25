@@ -38,23 +38,20 @@ To maintain clear async-safe execution traces, every connection is associated wi
 ```mermaid
 stateDiagram-v2
     [*] --> SCHEDULED
-    SCHEDULED --> RUNNING : start background task
-    state RUNNING {
-        [*] --> SEARCHING_VENDORS
-        SEARCHING_VENDORS --> ANALYZING_PRICING
-        ANALYZING_PRICING --> DRAFTING_OUTREACH
-        DRAFTING_OUTREACH --> SELF_REFLECTION
-    }
-    RUNNING --> WAITING_APPROVAL : pause at gate
-    WAITING_APPROVAL --> EXECUTING : APPROVE received
-    WAITING_APPROVAL --> RUNNING : REJECT received (regenerate)
-    WAITING_APPROVAL --> CANCELLED : STOP received / timeout
-    EXECUTING --> SUCCESS : completed
+    SCHEDULED --> SEARCHING_VENDORS : start background task
+    SEARCHING_VENDORS --> ANALYZING_PRICING
+    ANALYZING_PRICING --> DRAFTING_OUTREACH
+    DRAFTING_OUTREACH --> SELF_REFLECTION
+    SELF_REFLECTION --> WAITING_FINAL_APPROVAL
+    WAITING_FINAL_APPROVAL --> EXECUTING : APPROVE received
+    WAITING_FINAL_APPROVAL --> SEARCHING_VENDORS : REJECT (rerun vendor search)
+    WAITING_FINAL_APPROVAL --> DRAFTING_OUTREACH : REJECT (rerun draft outreach)
+    WAITING_FINAL_APPROVAL --> CANCELLED : STOP received / timeout
+    EXECUTING --> COMPLETED : completed
     EXECUTING --> FAILED : unexpected error
-    WAITING_APPROVAL --> CANCELLED : STOP received / timeout
-    RUNNING --> CANCELLED : STOP received
-    RUNNING --> FAILED : unexpected error
-    SUCCESS --> [*]
+    SEARCHING_VENDORS --> CANCELLED : STOP received
+    SEARCHING_VENDORS --> FAILED : unexpected error
+    COMPLETED --> [*]
     CANCELLED --> [*]
     FAILED --> [*]
 ```
@@ -69,7 +66,7 @@ sequenceDiagram
     Note over Server: Generates task_id & sets contextvars
     
     rect rgb(240, 248, 255)
-        Note over Server, Client: Standard Message Loop (RUNNING)
+        Note over Server, Client: Standard Message Loop (Autonomous Steps)
         Server->>Client: Send StatusUpdateEvent (STATUS_UPDATE: SEARCHING_VENDORS)
         Server->>Client: Send StatusUpdateEvent (STATUS_UPDATE: ANALYZING_PRICING)
         Server->>Client: Send StatusUpdateEvent (STATUS_UPDATE: DRAFTING_OUTREACH)
@@ -77,16 +74,16 @@ sequenceDiagram
     end
 
     rect rgb(255, 240, 245)
-        Note over Server, Client: Human-in-the-loop Interaction (WAITING_APPROVAL)
+        Note over Server, Client: Human-in-the-loop Interaction (WAITING_FINAL_APPROVAL)
         Server->>Client: Send ApprovalRequiredEvent (APPROVAL_REQUIRED)
         Note over Server: Wait with APPROVAL_TIMEOUT_SECONDS timeout
         alt APPROVE action received
             Client->>Server: Send ApprovalResponseEvent (APPROVAL_RESPONSE: APPROVE)
             Note over Server: Transitions to EXECUTING
-            Server->>Client: Send TaskCompletedEvent (TASK_COMPLETED: SUCCESS)
+            Server->>Client: Send TaskCompletedEvent (TASK_COMPLETED: COMPLETED)
         else REJECT action received
             Client->>Server: Send ApprovalResponseEvent (APPROVAL_RESPONSE: REJECT)
-            Note over Server: Loop regenerates draft (Transitions back to RUNNING)
+            Note over Server: Planner evaluates feedback & reruns affected steps
         else STOP message received
             Client->>Server: Send StopEvent (STOP)
             Server->>Client: Send TaskCancelledEvent (TASK_CANCELLED: CANCELLED)
@@ -115,11 +112,11 @@ active_tasks[task_id] = {
 This is cleaned up immediately upon completion, cancellation, or connection drops to prevent memory leaks.
 
 ### Iterative Human-in-the-Loop Workflow
-The orchestration workflow uses a bounded regeneration loop around drafting and self-reflection, pausing at `WAITING_APPROVAL` via Python's `asyncio.Event` (`approval_event`):
-- When entering `WAITING_APPROVAL` state, the orchestrator calls `await approval_event.wait()`.
+The orchestration workflow uses a simplified human-in-the-loop validation flow, pausing at `WAITING_FINAL_APPROVAL` via Python's `asyncio.Event` (`approval_event`):
+- When entering `WAITING_FINAL_APPROVAL` state, the orchestrator calls `await approval_event.wait()`.
 - If an `APPROVAL_RESPONSE` payload arrives, the `WorkflowState` stores the `approval_action` (and `rejection_feedback`), and `approval_event.set()` is called.
 - If the action is `APPROVE`, the workflow breaks the loop and proceeds to `EXECUTING`.
-- If the action is `REJECT`, the workflow increments the regeneration count and loops back to regenerate the draft, utilizing the `rejection_feedback`. A guardrail limit `MAX_REGENERATION_ATTEMPTS` prevents infinite loops.
+- If the action is `REJECT`, the workflow evaluates feedback and reruns the affected steps, utilizing the `rejection_feedback`. A guardrail limit `MAX_REGENERATION_ATTEMPTS` prevents infinite loops.
 
 ### Approval Timeout Strategy
 To prevent hanging tasks, the orchestrator wraps approval waiting in `asyncio.wait_for(...)` using a configurable timeout defined by the `APPROVAL_TIMEOUT_SECONDS` environment variable (default: `10` seconds):
@@ -159,7 +156,7 @@ All WebSocket event payloads derive from `BaseWebSocketEvent` containing the tra
   "event_type": "APPROVAL_REQUIRED",
   "correlation_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
   "task_id": "8fa16de3-d144-482d-83b9-a29bc0192d29",
-  "task_state": "WAITING_APPROVAL",
+  "task_state": "WAITING_FINAL_APPROVAL",
   "draft_message": "Hello vendor, we would like to discuss pricing...",
   "message": "Draft generated. Awaiting user approval."
 }
@@ -171,7 +168,7 @@ All WebSocket event payloads derive from `BaseWebSocketEvent` containing the tra
   "event_type": "TASK_COMPLETED",
   "correlation_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
   "task_id": "8fa16de3-d144-482d-83b9-a29bc0192d29",
-  "task_state": "SUCCESS",
+  "task_state": "COMPLETED",
   "message": "Task successfully executed. Outreach finalized."
 }
 ```
@@ -222,7 +219,7 @@ The backend incorporates real-time OpenAI Chat Completion to generate and improv
 2. **SELF_REFLECTION**: Calls `self_reflect_draft(draft)` targeting the OpenAI API.
    - **System Prompt**: `"You are reviewing an outreach message for professionalism, tone, and clarity. Keep it concise."`
    - **User Prompt**: `"Improve this outreach draft while keeping it concise and professional:\n\n{draft}"`
-3. **WAITING_APPROVAL**: Sends the refined draft message to the client via `ApprovalRequiredEvent`.
+3. **WAITING_FINAL_APPROVAL**: Sends the refined draft message to the client via `ApprovalRequiredEvent`.
 
 ### Error Boundaries & Handling
 - If OpenAI API raises an exception (e.g. invalid API key, network timeout), the orchestrator catches it, logs the error, sends a WebSocket `ErrorEvent` with `error_code="LLM_GENERATION_FAILED"`, and gracefully aborts execution.
@@ -257,10 +254,10 @@ Instead of adopting heavy orchestration frameworks (like LangGraph or LangChain)
 ## 8. Guardrails & Workflow Safety
 
 ### State Transition Validation
-A `VALID_TRANSITIONS` map enforces which state changes are permitted. The `transition_task_state()` helper validates every transition before applying it. Invalid transitions (e.g. `SUCCESS → RUNNING`) are logged at `WARNING` level and silently rejected, preventing the workflow from entering inconsistent states.
+A `VALID_TRANSITIONS` map enforces which state changes are permitted. The `transition_task_state()` helper validates every transition before applying it. Invalid transitions (e.g. `COMPLETED → RUNNING`) are logged at `WARNING` level and silently rejected, preventing the workflow from entering inconsistent states.
 
 ### Terminal Event Idempotency
-A `terminal_emitted` flag in the task registry ensures that terminal WebSocket events (`SUCCESS`, `FAILED`, `CANCELLED`) are emitted at most once per task lifecycle. The `send_terminal_event()` helper checks this flag before emission, preventing race-condition duplicates when cancellation and timeout fire simultaneously.
+A `terminal_emitted` flag in the task registry ensures that terminal WebSocket events (`COMPLETED`, `FAILED`, `CANCELLED`) are emitted at most once per task lifecycle. The `send_terminal_event()` helper checks this flag before emission, preventing race-condition duplicates when cancellation and timeout fire simultaneously.
 
 ### Duplicate Task Protection
 Before registering a new orchestration task, the WebSocket handler calls `is_websocket_active(websocket)` to verify that the connection does not already have a non-terminal task running. Duplicate attempts are logged at `WARNING` level and rejected without establishing a new session.

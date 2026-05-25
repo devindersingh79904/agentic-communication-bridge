@@ -226,7 +226,7 @@ uv run pytest
    - **Real WebSocket Integration**: Verifies websocket endpoint interaction via FastAPI `TestClient`.
    - **Unexpected Disconnect Cleanup**: Validates that when a client websocket disconnects unexpectedly, the orchestration task is cancelled and cleanly removed from the active tasks registry, preventing orphan memory leaks.
 3. **State Transitions (`tests/test_state_transitions.py`)**:
-   - Validates all allowed state machine transitions (e.g. `SCHEDULED` -> `RUNNING` -> `WAITING_APPROVAL` -> `EXECUTING` -> `SUCCESS`).
+   - Validates all allowed state machine transitions (e.g. `SCHEDULED` -> `RUNNING` -> `WAITING_FINAL_APPROVAL` -> `EXECUTING` -> `COMPLETED`).
    - Verifies blocking/prevention of invalid transitions (e.g. terminal state changes).
 4. **LLM Integration & Refinement (`tests/test_llm_service.py`)**:
    - **Two-Pass LLM Refinement**: Validates the evaluation-then-rewrite pipeline.
@@ -248,7 +248,7 @@ The interrupt mechanism is built on three layers:
 2. **WebSocket Handler Layer** (`app/websocket/agent_websocket.py`) — Receives the `STOP` event and delegates to `cancel_task(task_id)`. Additionally, the `finally` block in the handler guarantees cleanup even on unexpected disconnects.
 
 3. **Orchestrator Layer** (`app/services/agent_orchestrator_service.py`) — `cancel_task()` performs:
-   - State transition guard: `transition_task_state(task_id, TaskState.CANCELLED)` validates the transition against the `VALID_TRANSITIONS` state machine. If the task is already in a terminal state (`SUCCESS`, `FAILED`, `CANCELLED`), the transition is rejected and no further action is taken.
+   - State transition guard: `transition_task_state(task_id, TaskState.CANCELLED)` validates the transition against the `VALID_TRANSITIONS` state machine. If the task is already in a terminal state (`COMPLETED`, `FAILED`, `CANCELLED`), the transition is rejected and no further action is taken.
    - Sets the `cancelled` flag on the task registry entry.
    - Cancels the `asyncio.Task` via `task.cancel()`, which raises `asyncio.CancelledError` inside the running orchestration coroutine.
    - Awaits `asyncio.gather(task, return_exceptions=True)` to ensure the coroutine has fully exited before cleanup proceeds.
@@ -259,13 +259,13 @@ The interrupt mechanism is built on three layers:
 |---|---|
 | STOP during `SEARCHING_VENDORS` / `ANALYZING_PRICING` | `asyncio.CancelledError` propagates through `asyncio.sleep()` in the tool. Caught in orchestrator, `TASK_CANCELLED` emitted. |
 | STOP during `DRAFTING_OUTREACH` (active LLM call) | `asyncio.CancelledError` interrupts the `await client.chat.completions.create()` call. Caught and cleaned up. |
-| STOP during `WAITING_APPROVAL` (approval timeout) | `asyncio.CancelledError` interrupts `asyncio.wait_for(approval_event.wait())`. Caught and cleaned up. |
-| STOP at exact moment of `SUCCESS` | `transition_task_state()` rejects `SUCCESS → CANCELLED` because `SUCCESS` is a terminal state with no outgoing transitions. The STOP is safely ignored. |
+| STOP during `WAITING_FINAL_APPROVAL` (approval timeout) | `asyncio.CancelledError` interrupts `asyncio.wait_for(approval_event.wait())`. Caught and cleaned up. |
+| STOP at exact moment of `COMPLETED` | `transition_task_state()` rejects `COMPLETED → CANCELLED` because `COMPLETED` is a terminal state with no outgoing transitions. The STOP is safely ignored. |
 | STOP after timeout cancellation | `transition_task_state()` rejects `CANCELLED → CANCELLED`. Idempotent — no duplicate events emitted. |
 
 ### Terminal Event Deduplication
 
-`send_terminal_event()` uses a `terminal_emitted` flag to ensure that `SUCCESS`, `FAILED`, or `CANCELLED` events are emitted **exactly once**, even under concurrent cancellation and completion races. After emitting, the WebSocket connection is closed server-side.
+`send_terminal_event()` uses a `terminal_emitted` flag to ensure that `COMPLETED`, `FAILED`, or `CANCELLED` events are emitted **exactly once**, even under concurrent cancellation and completion races. After emitting, the WebSocket connection is closed server-side.
 
 ---
 

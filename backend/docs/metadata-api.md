@@ -26,31 +26,39 @@ The frontend client should make a request to this endpoint once on application s
     "task_states": [
       "SCHEDULED",
       "RUNNING",
-      "WAITING_APPROVAL",
-      "EXECUTING",
-      "SUCCESS",
+      "SEARCHING_VENDORS",
+      "EXTERNAL_SEARCHING",
+      "ANALYZING_PRICING",
+      "DRAFTING_OUTREACH",
+      "SELF_REFLECTION",
+      "WAITING_FINAL_APPROVAL",
+      "COMPLETED",
       "FAILED",
-      "CANCELLED"
+      "CANCELLED",
+      "FAILED_RETRYING"
     ],
     "websocket_event_types": [
       "STATUS_UPDATE",
       "APPROVAL_REQUIRED",
-      "APPROVED",
+      "START_TASK",
+      "APPROVAL_RESPONSE",
       "STOP",
       "TASK_COMPLETED",
-      "TASK_FAILED",
       "TASK_CANCELLED",
-      "ERROR"
+      "ERROR",
+      "PING",
+      "PONG"
     ],
     "approval_actions": [
       "APPROVE",
-      "STOP"
+      "REJECT"
     ],
     "agent_steps": [
       "SEARCHING_VENDORS",
       "ANALYZING_PRICING",
       "DRAFTING_OUTREACH",
-      "SELF_REFLECTION"
+      "SELF_REFLECTION",
+      "EXECUTING"
     ]
   }
 }

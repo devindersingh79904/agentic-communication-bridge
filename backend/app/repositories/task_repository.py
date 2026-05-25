@@ -127,7 +127,7 @@ class TaskRepository:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT task_id, user_prompt, final_output, memory FROM tasks WHERE status = 'SUCCESS' ORDER BY updated_at DESC LIMIT ?",
+                "SELECT task_id, user_prompt, final_output, memory FROM tasks WHERE status = 'COMPLETED' ORDER BY updated_at DESC LIMIT ?",
                 (limit,)
             )
             rows = cursor.fetchall()

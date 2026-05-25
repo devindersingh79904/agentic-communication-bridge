@@ -5,12 +5,12 @@ export type TaskState =
   | 'SCHEDULED'
   | 'RUNNING'
   | 'SEARCHING_VENDORS'
+  | 'EXTERNAL_SEARCHING'
   | 'ANALYZING_PRICING'
   | 'DRAFTING_OUTREACH'
   | 'SELF_REFLECTION'
   | 'WAITING_FINAL_APPROVAL'
   | 'COMPLETED'
-  | 'SUCCESS'
   | 'FAILED'
   | 'CANCELLED'
   | 'FAILED_RETRYING';
@@ -40,7 +40,7 @@ export interface VendorResult {
   score?: number;
   source_type?: 'internal' | 'external' | string;
   catalog?: Record<string, string | number>;
-  items?: Record<string, string | number>;
+  items?: Array<Record<string, any>>;
   catalog_items?: any;
 }
 
@@ -71,7 +71,7 @@ export interface StatusUpdateEvent extends BaseWebSocketEvent {
 
 export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
   event_type: 'APPROVAL_REQUIRED';
-  task_state: 'WAITING_APPROVAL';
+  task_state: 'WAITING_FINAL_APPROVAL';
   agent_step: AgentStep;
   draft_message: string;
   step_data?: string;
@@ -85,7 +85,7 @@ export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
 
 export interface TaskCompletedEvent extends BaseWebSocketEvent {
   event_type: 'TASK_COMPLETED';
-  task_state: 'SUCCESS';
+  task_state: 'COMPLETED';
   message: string;
   final_response?: string;
   vendors?: VendorResult[];

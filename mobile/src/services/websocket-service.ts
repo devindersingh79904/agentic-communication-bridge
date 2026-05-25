@@ -189,7 +189,7 @@ export const connectAgentWS = (prompt: string) => {
             if (timerId) { clearInterval(timerId); timerId = null; }
             if (heartbeatTimerId) { clearInterval(heartbeatTimerId); heartbeatTimerId = null; }
             
-            store.updateTaskState('SUCCESS');
+            store.updateTaskState('COMPLETED');
             store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
             store.setIsRegenerating(false);
@@ -202,7 +202,7 @@ export const connectAgentWS = (prompt: string) => {
             // Add final outcome to history item
             if (store.taskId) {
               store.updateHistoryItem(store.taskId, {
-                status: 'SUCCESS',
+                status: 'COMPLETED',
                 selected_vendor: store.selectedVendor ?? undefined,
                 final_response: completedData.final_response ?? store.draftMessage ?? undefined,
               });
@@ -316,7 +316,7 @@ export const connectAgentWS = (prompt: string) => {
         'RUNNING',
         'EXTERNAL_SEARCHING',
         'FAILED_RETRYING',
-        'WAITING_APPROVAL'
+        'WAITING_FINAL_APPROVAL'
       ].includes(stateBeforeClose);
 
       if (isIntermediate && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
