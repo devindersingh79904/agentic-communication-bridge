@@ -41,9 +41,7 @@ VALID_TRANSITIONS = {
         TaskState.RUNNING,
         TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.DRAFTING_OUTREACH,
         TaskState.SELF_REFLECTION,
         TaskState.WAITING_FINAL_APPROVAL,
@@ -55,9 +53,7 @@ VALID_TRANSITIONS = {
     TaskState.RUNNING: {
         TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.DRAFTING_OUTREACH,
         TaskState.SELF_REFLECTION,
         TaskState.WAITING_FINAL_APPROVAL,
@@ -69,9 +65,7 @@ VALID_TRANSITIONS = {
     TaskState.SEARCHING_VENDORS: {
         TaskState.RUNNING,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.DRAFTING_OUTREACH,
         TaskState.SELF_REFLECTION,
         TaskState.WAITING_FINAL_APPROVAL,
@@ -83,23 +77,7 @@ VALID_TRANSITIONS = {
     TaskState.EXTERNAL_SEARCHING: {
         TaskState.RUNNING,
         TaskState.SEARCHING_VENDORS,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
-        TaskState.DRAFTING_OUTREACH,
-        TaskState.SELF_REFLECTION,
-        TaskState.WAITING_FINAL_APPROVAL,
-        TaskState.COMPLETED,
-        TaskState.FAILED,
-        TaskState.CANCELLED,
-        TaskState.FAILED_RETRYING
-    },
-    TaskState.WAITING_VENDOR_SELECTION: {
-        TaskState.RUNNING,
-        TaskState.SEARCHING_VENDORS,
-        TaskState.EXTERNAL_SEARCHING,
-        TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.DRAFTING_OUTREACH,
         TaskState.SELF_REFLECTION,
         TaskState.WAITING_FINAL_APPROVAL,
@@ -112,22 +90,6 @@ VALID_TRANSITIONS = {
         TaskState.RUNNING,
         TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
-        TaskState.WAITING_PRICE_APPROVAL,
-        TaskState.DRAFTING_OUTREACH,
-        TaskState.SELF_REFLECTION,
-        TaskState.WAITING_FINAL_APPROVAL,
-        TaskState.COMPLETED,
-        TaskState.FAILED,
-        TaskState.CANCELLED,
-        TaskState.FAILED_RETRYING
-    },
-    TaskState.WAITING_PRICE_APPROVAL: {
-        TaskState.RUNNING,
-        TaskState.SEARCHING_VENDORS,
-        TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
-        TaskState.ANALYZING_PRICING,
         TaskState.DRAFTING_OUTREACH,
         TaskState.SELF_REFLECTION,
         TaskState.WAITING_FINAL_APPROVAL,
@@ -140,9 +102,7 @@ VALID_TRANSITIONS = {
         TaskState.RUNNING,
         TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.SELF_REFLECTION,
         TaskState.WAITING_FINAL_APPROVAL,
         TaskState.COMPLETED,
@@ -154,9 +114,7 @@ VALID_TRANSITIONS = {
         TaskState.RUNNING,
         TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.DRAFTING_OUTREACH,
         TaskState.WAITING_FINAL_APPROVAL,
         TaskState.COMPLETED,
@@ -168,9 +126,7 @@ VALID_TRANSITIONS = {
         TaskState.RUNNING,
         TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.DRAFTING_OUTREACH,
         TaskState.SELF_REFLECTION,
         TaskState.COMPLETED,
@@ -182,9 +138,7 @@ VALID_TRANSITIONS = {
         TaskState.RUNNING,
         TaskState.SEARCHING_VENDORS,
         TaskState.EXTERNAL_SEARCHING,
-        TaskState.WAITING_VENDOR_SELECTION,
         TaskState.ANALYZING_PRICING,
-        TaskState.WAITING_PRICE_APPROVAL,
         TaskState.DRAFTING_OUTREACH,
         TaskState.SELF_REFLECTION,
         TaskState.WAITING_FINAL_APPROVAL,
@@ -275,7 +229,7 @@ def handle_approval_response(
         return
 
     state = task_info.get("task_state")
-    if state not in (TaskState.WAITING_VENDOR_SELECTION, TaskState.WAITING_PRICE_APPROVAL, TaskState.WAITING_FINAL_APPROVAL):
+    if state != TaskState.WAITING_FINAL_APPROVAL:
         logger.warning("Task received approval response but is in state: %s", state)
         return
 
@@ -525,10 +479,10 @@ async def _await_step_approval(
     if not task_info or task_info.get("cancelled"):
         raise asyncio.CancelledError()
 
-    # Handle rejection / modification response
+    # Handle rejection response
     action = state.approval_action
-    if action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
-        logger.info("Step %s received %s. Re-running step...", agent_step, action.value)
+    if action == ApprovalAction.REJECT:
+        logger.info("Step %s received REJECT. Re-running step...", agent_step)
         transition_task_state(task_id, TaskState.RUNNING)
         task_repo.update_task_status(task_id, waiting_state, TaskState.RUNNING)
         return False
@@ -650,37 +604,14 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                 if is_auto_approve:
                     logger.info("AUTO_APPROVE is enabled. Automatically approving '%s' step.", step_name)
                     state.approval_action = ApprovalAction.APPROVE
-                    if step_name == "vendor_selection":
-                        vendors = state.research_data.get("vendors", []) if state.research_data else []
-                        state.selected_vendors = vendors
                     state.current_step = TaskState.RUNNING
                     continue
 
                 # Pause execution and prompt user
-                waiting_state = TaskState.WAITING_VENDOR_SELECTION
-                agent_step = AgentStep.SEARCHING_VENDORS
-                step_data = ""
-                message = "Review discovered vendors."
-
-                if step_name == "vendor_selection":
-                    waiting_state = TaskState.WAITING_VENDOR_SELECTION
-                    agent_step = AgentStep.SEARCHING_VENDORS
-                    vendors = state.research_data.get("vendors", []) if state.research_data else []
-                    vendor_names = [v.get("vendor_name") or v.get("name", "Unknown") for v in vendors]
-                    step_data = "\n".join([f"• {name}" for name in vendor_names])
-                    message = "Vendor discovery complete. Select candidates and approve."
-                elif step_name == "price_approval":
-                    waiting_state = TaskState.WAITING_PRICE_APPROVAL
-                    agent_step = AgentStep.ANALYZING_PRICING
-                    step_data = state.analysis_summary or ""
-                    if state.selected_vendor:
-                        step_data += f"\n\nSelected Vendor: {state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name')}"
-                    message = "Pricing analysis complete. Approve to generate outreach draft."
-                elif step_name == "final_approval":
-                    waiting_state = TaskState.WAITING_FINAL_APPROVAL
-                    agent_step = AgentStep.SELF_REFLECTION
-                    step_data = state.improved_draft or state.draft or ""
-                    message = "Self-reflection completed. Approve to execute outreach proposal."
+                waiting_state = TaskState.WAITING_FINAL_APPROVAL
+                agent_step = AgentStep.SELF_REFLECTION
+                step_data = state.improved_draft or state.draft or ""
+                message = "✅ Final proposal ready for review."
 
                 state.current_step = waiting_state
                 task_repo.update_task_workflow_state(task_id, state.to_json())
@@ -701,16 +632,12 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                     raise asyncio.CancelledError()
 
                 if not approved:
-                    # User rejected or requested changes
+                    # User rejected
                     if state.rejection_feedback:
                         state.feedback_history.append(state.rejection_feedback)
                 else:
                     # User approved
                     pass
-
-                state.approval_action = None
-                state.rejection_feedback = None
-                state.current_step = TaskState.RUNNING
 
             else:
                 # Tool Execution via ToolRegistry
@@ -726,12 +653,22 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         task_id=task_id,
                         task_state=TaskState.SEARCHING_VENDORS,
                         agent_step=AgentStep.SEARCHING_VENDORS,
-                        message="Searching local database and online catalogs..."
+                        message="🤖 Searching vendors..."
                     )
                     await safe_send_json(websocket, event.model_dump())
                     
                     await tool_registry.execute("vendor_search", state)
-                    state.current_step = TaskState.RUNNING
+                    
+                    # Emit VENDORS_FOUND status update event with details
+                    event = StatusUpdateEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.SEARCHING_VENDORS,
+                        agent_step=AgentStep.SEARCHING_VENDORS,
+                        message="🤖 Discovered vendors complete. Found vendor catalogs.",
+                        vendors=state.research_data.get("vendors") if state.research_data else None
+                    )
+                    await safe_send_json(websocket, event.model_dump())
                     
                 elif tool_name == "pricing_analysis":
                     state.current_step = TaskState.ANALYZING_PRICING
@@ -742,13 +679,29 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         task_id=task_id,
                         task_state=TaskState.ANALYZING_PRICING,
                         agent_step=AgentStep.ANALYZING_PRICING,
-                        message="Analyzing catalogs and pricing...",
-                        vendors=state.research_data.get("vendors") if state.research_data else None
+                        message="🤖 Comparing pricing..."
                     )
                     await safe_send_json(websocket, event.model_dump())
                     
                     await tool_registry.execute("pricing_analysis", state)
-                    state.current_step = TaskState.RUNNING
+                    
+                    # Emit PRICING_ANALYZED status update event with details
+                    event = StatusUpdateEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.ANALYZING_PRICING,
+                        agent_step=AgentStep.ANALYZING_PRICING,
+                        message="🤖 Pricing analysis complete.",
+                        vendors=state.research_data.get("vendors") if state.research_data else None,
+                        selected_vendor=state.selected_vendor,
+                        pricing_analysis={
+                            "summary": state.analysis_summary,
+                            "selected_vendor": state.selected_vendor,
+                            "confidence": state.selected_vendor.get("confidence", 0.85) if state.selected_vendor else 0.85,
+                            "reasoning": state.selected_vendor.get("reasoning", []) if state.selected_vendor else []
+                        } if state.analysis_summary else None
+                    )
+                    await safe_send_json(websocket, event.model_dump())
                     
                 elif tool_name == "draft_outreach":
                     state.current_step = TaskState.DRAFTING_OUTREACH
@@ -759,7 +712,19 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         task_id=task_id,
                         task_state=TaskState.DRAFTING_OUTREACH,
                         agent_step=AgentStep.DRAFTING_OUTREACH,
-                        message="Drafting outreach communication...",
+                        message="🤖 Drafting outreach..."
+                    )
+                    await safe_send_json(websocket, event.model_dump())
+                    
+                    await tool_registry.execute("draft_outreach", state)
+                    
+                    # Emit OUTREACH_DRAFTED status update event with details
+                    event = StatusUpdateEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.DRAFTING_OUTREACH,
+                        agent_step=AgentStep.DRAFTING_OUTREACH,
+                        message="🤖 Outreach draft generated.",
                         vendors=state.research_data.get("vendors") if state.research_data else None,
                         selected_vendor=state.selected_vendor,
                         pricing_analysis={
@@ -770,9 +735,6 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         } if state.analysis_summary else None
                     )
                     await safe_send_json(websocket, event.model_dump())
-                    
-                    await tool_registry.execute("draft_outreach", state)
-                    state.current_step = TaskState.RUNNING
                     
                 elif tool_name == "self_reflection":
                     state.current_step = TaskState.SELF_REFLECTION
@@ -783,7 +745,19 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         task_id=task_id,
                         task_state=TaskState.SELF_REFLECTION,
                         agent_step=AgentStep.SELF_REFLECTION,
-                        message="Running self-reflection quality audit...",
+                        message="🤖 Running self-reflection audit..."
+                    )
+                    await safe_send_json(websocket, event.model_dump())
+                    
+                    await tool_registry.execute("self_reflection", state)
+                    
+                    # Emit REFLECTION_COMPLETED status update event with details
+                    event = StatusUpdateEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.SELF_REFLECTION,
+                        agent_step=AgentStep.SELF_REFLECTION,
+                        message="🤖 Self-reflection audit complete.",
                         vendors=state.research_data.get("vendors") if state.research_data else None,
                         selected_vendor=state.selected_vendor,
                         pricing_analysis={
@@ -795,9 +769,6 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                     )
                     await safe_send_json(websocket, event.model_dump())
                     
-                    await tool_registry.execute("self_reflection", state)
-                    state.current_step = TaskState.RUNNING
-                    
                 elif tool_name == "execute_outreach":
                     task_repo.update_task_status(task_id, TaskState.RUNNING, TaskState.RUNNING)
                     
@@ -805,8 +776,8 @@ async def run_orchestration(websocket: WebSocket, correlation_id: str, task_id: 
                         correlation_id=correlation_id,
                         task_id=task_id,
                         task_state=TaskState.RUNNING,
-                        agent_step=AgentStep.SELF_REFLECTION,
-                        message="Executing final procurement outreach..."
+                        agent_step=AgentStep.EXECUTING,
+                        message="🤖 Executing final procurement outreach..."
                     )
                     await safe_send_json(websocket, event.model_dump())
                     

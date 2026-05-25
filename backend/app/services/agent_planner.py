@@ -59,6 +59,32 @@ class AgentPlanner:
             logger.warning(f"Failed to detect category for prompt via LLM: {e}")
         return "computer"
 
+    def classify_rejection_feedback(self, feedback: str) -> str:
+        """
+        Classifies rejection feedback to determine whether to rerun 'vendor_search' or 'draft_outreach'.
+        """
+        feedback_lower = feedback.lower()
+        
+        # Vendor-related cues
+        vendor_keywords = [
+            "expensive", "cheaper", "cost", "price", "vendor", "supplier", 
+            "delivery", "location", "local", "bangalore", "mumbai", "delhi", 
+            "city", "cheapest", "budget", "near"
+        ]
+        if any(kw in feedback_lower for kw in vendor_keywords):
+            return "vendor_search"
+            
+        # Draft-related cues
+        draft_keywords = [
+            "tone", "aggressive", "professional", "rewrite", "email", "outreach", 
+            "shorter", "longer", "subject", "wording", "text", "message", "grammar"
+        ]
+        if any(kw in feedback_lower for kw in draft_keywords):
+            return "draft_outreach"
+            
+        # Default fallback
+        return "draft_outreach"
+
     async def decide_next_action(self, state: WorkflowState) -> Dict[str, Any]:
         """
         Agentic Decision Engine: Dynamically determines the next action based on current state,
@@ -71,81 +97,27 @@ class AgentPlanner:
         logger.info(f"Decision Engine: Evaluating next action. Current state step: {state.current_step}")
         
         # Rule-based fast paths to avoid unnecessary LLM latency for standard state transitions
-        if state.current_step == TaskState.SCHEDULED:
+        if state.current_step in (TaskState.SCHEDULED, TaskState.RUNNING):
             return {
                 "next_action": "vendor_search",
-                "reason": "Task scheduled, starting vendor research.",
+                "reason": "Starting vendor research.",
                 "parameters": {}
             }
             
-        # If we just completed searching vendors and AUTO_APPROVE is false, we must wait for selection
         if state.current_step == TaskState.SEARCHING_VENDORS:
-            from app.core import config
-            if config.AUTO_APPROVE:
-                vendors = state.research_data.get("vendors", []) if state.research_data else []
-                state.selected_vendors = vendors
-                return {
-                    "next_action": "pricing_analysis",
-                    "reason": "Auto-approve is enabled. Proceeding directly to pricing analysis.",
-                    "parameters": {}
-                }
-            else:
-                return {
-                    "next_action": "wait_for_human",
-                    "reason": "Awaiting human vendor selection and feedback.",
-                    "parameters": {"step": "vendor_selection"}
-                }
-                
-        # If we are waiting for vendor selection and received approval/selection
-        if state.current_step == TaskState.WAITING_VENDOR_SELECTION:
-            if state.approval_action == ApprovalAction.APPROVE:
-                return {
-                    "next_action": "pricing_analysis",
-                    "reason": "Human approved vendor selection. Proceeding to pricing analysis.",
-                    "parameters": {}
-                }
-            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
-                pass
-            else:
-                return {
-                    "next_action": "wait_for_human",
-                    "reason": "Still waiting for human vendor selection.",
-                    "parameters": {"step": "vendor_selection"}
-                }
-                
-        # If we completed pricing analysis
+            return {
+                "next_action": "pricing_analysis",
+                "reason": "Vendor search completed. Proceeding autonomously to pricing analysis.",
+                "parameters": {}
+            }
+            
         if state.current_step == TaskState.ANALYZING_PRICING:
-            from app.core import config
-            if config.AUTO_APPROVE:
-                return {
-                    "next_action": "draft_outreach",
-                    "reason": "Auto-approve enabled. Proceeding to outreach drafting.",
-                    "parameters": {}
-                }
-            else:
-                return {
-                    "next_action": "wait_for_human",
-                    "reason": "Awaiting human approval of selected vendor and pricing analysis.",
-                    "parameters": {"step": "price_approval"}
-                }
-                
-        # If we are waiting for pricing approval
-        if state.current_step == TaskState.WAITING_PRICE_APPROVAL:
-            if state.approval_action == ApprovalAction.APPROVE:
-                return {
-                    "next_action": "draft_outreach",
-                    "reason": "Pricing selection approved. Proceeding to drafting.",
-                    "parameters": {}
-                }
-            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
-                pass
-            else:
-                return {
-                    "next_action": "wait_for_human",
-                    "reason": "Still waiting for human pricing approval.",
-                    "parameters": {"step": "price_approval"}
-                }
-                
+            return {
+                "next_action": "draft_outreach",
+                "reason": "Pricing analysis completed. Proceeding autonomously to outreach drafting.",
+                "parameters": {}
+            }
+            
         # After drafting outreach, we always run self-reflection immediately
         if state.current_step == TaskState.DRAFTING_OUTREACH:
             return {
@@ -169,7 +141,8 @@ class AgentPlanner:
                     "parameters": {}
                 }
                 
-            if config.AUTO_APPROVE:
+            from app.core import config as system_config
+            if system_config.AUTO_APPROVE:
                 return {
                     "next_action": "execute_outreach",
                     "reason": "Auto-approve enabled. Proceeding to outreach execution.",
@@ -185,13 +158,45 @@ class AgentPlanner:
         # If waiting for final approval
         if state.current_step == TaskState.WAITING_FINAL_APPROVAL:
             if state.approval_action == ApprovalAction.APPROVE:
+                state.approval_action = None
+                state.rejection_feedback = None
                 return {
                     "next_action": "execute_outreach",
                     "reason": "Outreach proposal approved. Proceeding to final execution.",
                     "parameters": {}
                 }
-            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
-                pass
+            elif state.approval_action == ApprovalAction.REJECT:
+                feedback = state.rejection_feedback or ""
+                next_act = self.classify_rejection_feedback(feedback)
+                
+                # Clear appropriate downstream states depending on what is being re-run
+                if next_act == "vendor_search":
+                    state.research_data = None
+                    state.analysis_summary = None
+                    state.selected_vendor = None
+                    state.draft = None
+                    state.improved_draft = None
+                    state.selected_vendors = []
+                    state.reflection_metadata = None
+                    reason = f"Re-running vendor search based on feedback: '{feedback}'"
+                else:
+                    state.draft = None
+                    state.improved_draft = None
+                    state.reflection_metadata = None
+                    reason = f"Re-running draft outreach based on feedback: '{feedback}'"
+                    
+                if feedback:
+                    state.feedback_history.append(feedback)
+                    
+                # Reset approval actions/feedback before rerunning
+                state.approval_action = None
+                state.rejection_feedback = None
+                
+                return {
+                    "next_action": next_act,
+                    "reason": reason,
+                    "parameters": {}
+                }
             else:
                 return {
                     "next_action": "wait_for_human",
@@ -218,7 +223,7 @@ class AgentPlanner:
             "- 'pricing_analysis': Select/analyze vendor pricing based on selected vendors.\n"
             "- 'draft_outreach': Re-generate outreach email using feedback details.\n"
             "- 'self_reflection': Re-run self-reflection check on draft.\n"
-            "- 'wait_for_human': Pause and request human input (params: 'step': 'vendor_selection', 'price_approval', 'final_approval').\n\n"
+            "- 'wait_for_human': Pause and request human input (params: 'step': 'final_approval').\n\n"
             "Return ONLY a JSON object of this structure:\n"
             "{\n"
             '  "next_action": "vendor_search" | "pricing_analysis" | "draft_outreach" | "wait_for_human",\n'
@@ -261,12 +266,7 @@ class AgentPlanner:
             return decision
         except Exception as e:
             logger.error(f"Decision Engine: LLM call failed, falling back to safe recovery transition: {e}")
-            if state.current_step == TaskState.WAITING_VENDOR_SELECTION:
-                return {"next_action": "vendor_search", "reason": "Fallback: search again.", "parameters": {}}
-            elif state.current_step == TaskState.WAITING_PRICE_APPROVAL:
-                return {"next_action": "vendor_search", "reason": "Fallback: return to search.", "parameters": {}}
-            else:
-                return {"next_action": "draft_outreach", "reason": "Fallback: rewrite outreach.", "parameters": {}}
+            return {"next_action": "draft_outreach", "reason": "Fallback: rewrite outreach.", "parameters": {}}
 
     async def run_research(self, state: WorkflowState, task_id: str, transition_callback) -> None:
         """
@@ -298,8 +298,8 @@ class AgentPlanner:
             external_results = await external_vendor_search_tool(query=state.prompt, category=category)
             external_vendors = external_results.get("vendors", [])
             
-            # Transition state back to RUNNING
-            await transition_callback(TaskState.RUNNING)
+            # Transition state back to SEARCHING_VENDORS
+            await transition_callback(TaskState.SEARCHING_VENDORS)
             
         all_vendors = internal_vendors + external_vendors
         

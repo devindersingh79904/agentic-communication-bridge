@@ -74,25 +74,10 @@ export const AgentScreen = () => {
   const [isHistoryVisible, setIsHistoryVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('logs');
   
-  // Modify draft request states
-  const [isModifyMode, setIsModifyMode] = useState(false);
-  const [modifyFeedback, setModifyFeedback] = useState('');
   const [selectedCards, setSelectedCards] = useState<VendorResult[]>([]);
 
   const handleToggleCard = (vendor: VendorResult) => {
-    if (taskState === 'WAITING_VENDOR_SELECTION') {
-      setSelectedCards((prev) => {
-        const vendorId = vendor.vendor_name || vendor.name;
-        const exists = prev.some((v) => (v.vendor_name || v.name) === vendorId);
-        if (exists) {
-          return prev.filter((v) => (v.vendor_name || v.name) !== vendorId);
-        } else {
-          return [...prev, vendor];
-        }
-      });
-    } else if (taskState === 'WAITING_PRICE_APPROVAL') {
-      setSelectedCards([vendor]);
-    }
+    // Read-only in simplified HITL flow
   };
 
   const flatListRef = useRef<FlatList>(null);
@@ -105,14 +90,8 @@ export const AgentScreen = () => {
 
   // Sync selected cards with active HITL step state
   useEffect(() => {
-    if (taskState === 'WAITING_VENDOR_SELECTION') {
-      setSelectedCards(vendorResults);
-    } else if (taskState === 'WAITING_PRICE_APPROVAL') {
-      setSelectedCards(selectedVendor ? [selectedVendor] : []);
-    } else {
-      setSelectedCards([]);
-    }
-  }, [vendorResults, selectedVendor, taskState]);
+    setSelectedCards(selectedVendor ? [selectedVendor] : []);
+  }, [selectedVendor]);
 
   // Auto-switch tabs based on workflow progression to wow the user
   useEffect(() => {
@@ -121,11 +100,7 @@ export const AgentScreen = () => {
     } else if (currentAgentStep === 'SELF_REFLECTION') {
       setActiveTab('audit');
     } else if (taskState && taskState.startsWith('WAITING_')) {
-      if (taskState === 'WAITING_VENDOR_SELECTION' || taskState === 'WAITING_PRICE_APPROVAL') {
-        setActiveTab('vendors');
-      } else {
-        setActiveTab('audit');
-      }
+      setActiveTab('audit');
     } else if (taskState === 'SUCCESS' || taskState === 'COMPLETED' || taskState === 'EXECUTING') {
       setActiveTab('logs');
     }
@@ -150,31 +125,16 @@ export const AgentScreen = () => {
 
   const handleStart = () => {
     if (!promptInput.trim()) return;
-    setIsModifyMode(false);
-    setModifyFeedback('');
     connectAgentWS(promptInput.trim());
   };
 
   const handleApprove = () => {
-    if (taskState === 'WAITING_VENDOR_SELECTION') {
-      sendApprovalResponse('APPROVE', undefined, selectedCards);
-    } else if (taskState === 'WAITING_PRICE_APPROVAL') {
-      sendApprovalResponse('APPROVE', undefined, selectedCards);
-    } else {
-      sendApprovalResponse('APPROVE');
-    }
+    sendApprovalResponse('APPROVE');
   };
 
   const handleReject = () => {
     const feedback = rejectionFeedback.trim();
     sendApprovalResponse('REJECT', feedback);
-  };
-
-  const handleSendModifyRequest = () => {
-    if (!modifyFeedback.trim()) return;
-    sendApprovalResponse('MODIFY_REQUEST', modifyFeedback.trim());
-    setIsModifyMode(false);
-    setModifyFeedback('');
   };
 
   const handleSaveHost = () => {
@@ -231,8 +191,6 @@ export const AgentScreen = () => {
     // If waiting for approval, highlight the pending step
     if (taskState && (taskState === 'WAITING_APPROVAL' || taskState.startsWith('WAITING_'))) {
       const pendingStep = currentPendingStep || (
-        taskState === 'WAITING_VENDOR_SELECTION' ? 'SEARCHING_VENDORS' :
-        taskState === 'WAITING_PRICE_APPROVAL' ? 'ANALYZING_PRICING' :
         taskState === 'WAITING_FINAL_APPROVAL' ? 'SELF_REFLECTION' : null
       );
       if (stepId === pendingStep) {
@@ -335,7 +293,7 @@ export const AgentScreen = () => {
 
   const renderVendorCard = (vendor: VendorResult, isSelected = false) => {
     const sourceDetails = getSourceBadgeDetails(vendor.source_type);
-    const isInteractive = taskState === 'WAITING_VENDOR_SELECTION' || taskState === 'WAITING_PRICE_APPROVAL';
+    const isInteractive = false;
     return (
       <TouchableOpacity
         key={vendor.vendor_name || vendor.name}
@@ -707,19 +665,12 @@ export const AgentScreen = () => {
                 {getStepHeaderIcon()} WAITING FOR APPROVAL — {getStepHeaderLabel().toUpperCase()}
               </Text>
               <Text style={styles.waitingApprovalSubtitle}>
-                {taskState === 'WAITING_VENDOR_SELECTION' ? 'Select candidates in the Vendors tab above, then approve:' :
-                 taskState === 'WAITING_PRICE_APPROVAL' ? 'Review recommended vendor in the Vendors tab, tap any vendor card to override, then approve:' :
-                 'Review audit scores and generated draft in the Audit & Draft tab, then approve:'}
+                Review audit scores and generated draft in the Audit & Draft tab, then approve:
               </Text>
             </View>
             
             <View style={styles.approvalHeader}>
               <Text style={styles.approvalTitle}>Human Authorization Required</Text>
-              {timeoutCountdown !== null && !isRegenerating && (
-                <Text style={styles.timeoutCountdownText}>
-                  Auto-cancel in {timeoutCountdown}s
-                </Text>
-              )}
             </View>
 
             {isRegenerating ? (
@@ -728,25 +679,6 @@ export const AgentScreen = () => {
                 <Text style={styles.runningText}>
                   Re-running orchestration step based on feedback...
                 </Text>
-              </View>
-            ) : isModifyMode ? (
-              <View style={styles.modifyFeedbackContainer}>
-                <TextInput
-                  style={styles.modifyTextarea}
-                  value={modifyFeedback}
-                  onChangeText={setModifyFeedback}
-                  placeholder="Specify adjustments (e.g. 'Make the tone more formal', 'Add request for bulk discounts')..."
-                  placeholderTextColor="#94A3B8"
-                  multiline
-                />
-                <View style={styles.modifyActionsRow}>
-                  <TouchableOpacity style={styles.submitModifyButton} onPress={handleSendModifyRequest}>
-                    <Text style={styles.modifyBtnText}>Submit Changes</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.cancelModifyButton} onPress={() => setIsModifyMode(false)}>
-                    <Text style={styles.modifyBtnText}>Back</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
             ) : (
               <>
@@ -761,9 +693,6 @@ export const AgentScreen = () => {
                 <View style={styles.approvalActions}>
                   <TouchableOpacity style={styles.approveButton} onPress={handleApprove}>
                     <Text style={styles.actionButtonText}>✅ Approve</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.modifyButton} onPress={() => setIsModifyMode(true)}>
-                    <Text style={styles.actionButtonText}>✍️ Modify</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.rejectButton} onPress={handleReject}>
                     <Text style={styles.actionButtonText}>❌ Reject</Text>

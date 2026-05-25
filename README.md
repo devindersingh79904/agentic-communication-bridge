@@ -36,10 +36,9 @@ The application operates as a real-time, event-driven state machine guided by an
 2. **Client Sends `START_TASK`**: The client sends a `START_TASK` event containing a user prompt. If the event payload includes a previously saved `task_id`, the system automatically restores the serialized `WorkflowState` from the SQLite database and resumes the task from its last active state.
 3. **LLM Decision Loop**: At each step of execution, the orchestrator queries the LLM Planner (`app/services/agent_planner.py`), which inspects the prompt, constraints, history, and feedback, and decides the next action (e.g. run a tool, complete execution, or wait for human input).
 4. **Tool Registry & Execution Traces**: All logic steps are executed via the `ToolRegistry` abstraction. It logs detailed input/output JSON traces for every execution in `WorkflowState.tool_traces` and wraps them in retry logic (exponential backoff) with graceful degraded fallbacks.
-5. **Interactive Human-in-the-Loop (HITL) Gates**:
-   - `WAITING_VENDOR_SELECTION`: Pauses after vendor search. The user can select multiple vendors on the mobile interface, reject vendors, specify text feedback (like "Prefer Dell partner"), and request a re-search.
-   - `WAITING_PRICE_APPROVAL`: Pauses after pricing analysis. Displays recommended vendor selection, justifications, and confidence score. The user can tap any vendor card to override the selection and approve.
-   - `WAITING_FINAL_APPROVAL`: Pauses after outreach drafting and self-reflection quality check. Displays the final outreach text and quality audit badges (Tone Check, Accuracy Check, Layout Verification).
+5. **Interactive Human-in-the-Loop (HITL) Gate**:
+   - `WAITING_FINAL_APPROVAL`: Pauses only after pricing analysis, outreach drafting, and self-reflection quality checks are complete. Displays the final outreach text and quality audit badges (Tone Check, Accuracy Check, Layout Verification).
+   - If the user rejects, they can provide feedback (e.g., "too expensive" to rerun vendor search and pricing; "rewrite professionally" to rerun outreach drafting). The system dynamically parses this feedback to determine which steps to rerun.
 6. **Execution & Completion**: When final approval is given, the agent executes the outreach, updates the database, sends a `TASK_COMPLETED` payload, and gracefully terminates the session.
 
 Workflow state is persisted directly to SQLite via `workflow_state_json` on every state transition, ensuring zero context loss on connection drops.

@@ -89,88 +89,87 @@ def mock_tools():
     async def side_effect_decide(state):
         from app.core.enums import TaskState, ApprovalAction
         
-        # Track feedback length to trigger search retry on rejection
-        if not hasattr(state, "last_feedback_len"):
-            state.last_feedback_len = 0
-            
-        if len(state.feedback_history) > state.last_feedback_len:
-            state.last_feedback_len = len(state.feedback_history)
-            state.research_data = None # clear to trigger search retry
-            
-        # 1. Vendor search phase
-        if not state.research_data:
+        if state.current_step in (TaskState.SCHEDULED, TaskState.RUNNING):
             return {
                 "next_action": "vendor_search",
                 "reason": "Test search",
                 "parameters": {}
             }
             
-        # 2. Wait for vendor selection
-        if state.research_data and not state.selected_vendors:
-            return {
-                "next_action": "wait_for_human",
-                "reason": "Test wait vendor",
-                "parameters": {"step": "vendor_selection"}
-            }
-            
-        # 3. Pricing analysis phase
-        if state.selected_vendors and not state.analysis_summary:
+        if state.current_step == TaskState.SEARCHING_VENDORS:
             return {
                 "next_action": "pricing_analysis",
                 "reason": "Test pricing",
                 "parameters": {}
             }
             
-        # 4. Wait for price approval
-        if state.analysis_summary and not state.draft:
-            if not hasattr(state, "mock_price_waiting"):
-                state.mock_price_waiting = False
-            if not state.mock_price_waiting:
-                state.mock_price_waiting = True
-                return {
-                    "next_action": "wait_for_human",
-                    "reason": "Test wait pricing",
-                    "parameters": {"step": "price_approval"}
-                }
-            else:
-                return {
-                    "next_action": "draft_outreach",
-                    "reason": "Test drafting",
-                    "parameters": {}
-                }
+        if state.current_step == TaskState.ANALYZING_PRICING:
+            return {
+                "next_action": "draft_outreach",
+                "reason": "Test drafting",
+                "parameters": {}
+            }
             
-        # 5. Draft and reflection phases
-        if state.draft and not state.improved_draft:
+        if state.current_step == TaskState.DRAFTING_OUTREACH:
             return {
                 "next_action": "self_reflection",
                 "reason": "Test reflection",
                 "parameters": {}
             }
             
-        # 6. Wait for final approval
-        if state.improved_draft and not state.execution_result:
-            if not hasattr(state, "mock_final_waiting"):
-                state.mock_final_waiting = False
-            if not state.mock_final_waiting:
-                state.mock_final_waiting = True
-                return {
-                    "next_action": "wait_for_human",
-                    "reason": "Test wait final",
-                    "parameters": {"step": "final_approval"}
-                }
-            else:
+        if state.current_step == TaskState.SELF_REFLECTION:
+            return {
+                "next_action": "wait_for_human",
+                "reason": "Test wait final",
+                "parameters": {"step": "final_approval"}
+            }
+            
+        if state.current_step == TaskState.WAITING_FINAL_APPROVAL:
+            if state.approval_action == ApprovalAction.APPROVE:
+                state.approval_action = None
                 return {
                     "next_action": "execute_outreach",
                     "reason": "Test execute",
                     "parameters": {}
                 }
-            
-        # 7. Complete
-        return {
-            "next_action": "complete",
-            "reason": "Test complete",
-            "parameters": {}
-        }
+            elif state.approval_action == ApprovalAction.REJECT:
+                feedback = state.rejection_feedback or ""
+                state.approval_action = None
+                state.rejection_feedback = None
+                
+                # Check feedback to trigger search or draft rewrite
+                if "expensive" in feedback.lower() or "too many" in feedback.lower():
+                    state.research_data = None
+                    state.analysis_summary = None
+                    state.selected_vendor = None
+                    state.draft = None
+                    state.improved_draft = None
+                    return {
+                        "next_action": "vendor_search",
+                        "reason": f"Retry search: {feedback}",
+                        "parameters": {}
+                    }
+                else:
+                    state.draft = None
+                    state.improved_draft = None
+                    return {
+                        "next_action": "draft_outreach",
+                        "reason": f"Retry draft: {feedback}",
+                        "parameters": {}
+                    }
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Test wait final",
+                    "parameters": {"step": "final_approval"}
+                }
+                
+        if state.current_step == TaskState.COMPLETED:
+            return {
+                "next_action": "complete",
+                "reason": "Test complete",
+                "parameters": {}
+            }
     m_decide.side_effect = side_effect_decide
 
     with patch("app.services.agent_planner.planner.decide_next_action", new=m_decide):
@@ -190,8 +189,7 @@ async def wait_for_state(task_id, target_state, timeout=5.0):
 @pytest.mark.asyncio
 async def test_full_approval_flow(mock_tools):
     """
-    Test full approval through all 3 HITL wait states (vendor selection, price approval, final approval)
-    and execution completion.
+    Test full approval through the single final approval checkpoint and execution completion.
     """
     ws = MockWebSocket()
     task_id = "task-approve"
@@ -206,20 +204,9 @@ async def test_full_approval_flow(mock_tools):
     )
     set_task_reference(task_id, orchestration_task)
     
-    # Approve 3 steps (vendor selection, price approval, final approval)
-    for target_state in [
-        TaskState.WAITING_VENDOR_SELECTION,
-        TaskState.WAITING_PRICE_APPROVAL,
-        TaskState.WAITING_FINAL_APPROVAL
-    ]:
-        assert await wait_for_state(task_id, target_state) is True
-        
-        # When waiting for vendor selection, mimic frontend sending selected vendors list
-        if target_state == TaskState.WAITING_VENDOR_SELECTION:
-            vendors = [{"name": "TestVendor", "location": "TestLocation"}]
-            handle_approval_response(task_id, ApprovalAction.APPROVE, selected_vendors=vendors)
-        else:
-            handle_approval_response(task_id, ApprovalAction.APPROVE)
+    # Approve WAITING_FINAL_APPROVAL step
+    assert await wait_for_state(task_id, TaskState.WAITING_FINAL_APPROVAL) is True
+    handle_approval_response(task_id, ApprovalAction.APPROVE)
     
     await orchestration_task
     
@@ -231,7 +218,7 @@ async def test_full_approval_flow(mock_tools):
     
     # Count approval events
     approval_events = sum(1 for m in ws.sent_messages if m.get("event_type") == "APPROVAL_REQUIRED")
-    assert approval_events == 3, f"Expected 3 approval events, got {approval_events}"
+    assert approval_events == 1, f"Expected 1 approval event, got {approval_events}"
     
     # Final state in completed event must be COMPLETED
     completed_msg = ws.sent_messages[-1]
@@ -241,7 +228,7 @@ async def test_full_approval_flow(mock_tools):
 @pytest.mark.asyncio
 async def test_rejection_regeneration_loop(mock_tools):
     """
-    Test: reject at vendor selection step, re-run, then approve all remaining steps.
+    Test: reject outreach draft/proposal, re-run, then approve.
     """
     ws = MockWebSocket()
     task_id = "task-reject"
@@ -256,27 +243,18 @@ async def test_rejection_regeneration_loop(mock_tools):
     )
     set_task_reference(task_id, orchestration_task)
     
-    # Wait for first approval (vendor selection)
-    assert await wait_for_state(task_id, TaskState.WAITING_VENDOR_SELECTION) is True
+    # Wait for first approval (final approval)
+    assert await wait_for_state(task_id, TaskState.WAITING_FINAL_APPROVAL) is True
     
     # Reject once
-    handle_approval_response(task_id, ApprovalAction.REJECT, feedback="Too many vendors")
+    handle_approval_response(task_id, ApprovalAction.REJECT, feedback="Too expensive")
     
-    # Give orchestrator time to process rejection and re-enter WAITING_VENDOR_SELECTION
+    # Give orchestrator time to process rejection and re-enter WAITING_FINAL_APPROVAL
     await asyncio.sleep(0.05)
-    assert await wait_for_state(task_id, TaskState.WAITING_VENDOR_SELECTION) is True
+    assert await wait_for_state(task_id, TaskState.WAITING_FINAL_APPROVAL) is True
     
-    # Now approve vendor selection
-    vendors = [{"name": "TestVendor", "location": "TestLocation"}]
-    handle_approval_response(task_id, ApprovalAction.APPROVE, selected_vendors=vendors)
-    
-    # Approve remaining 2 steps (price approval, final approval)
-    for target_state in [
-        TaskState.WAITING_PRICE_APPROVAL,
-        TaskState.WAITING_FINAL_APPROVAL
-    ]:
-        assert await wait_for_state(task_id, target_state) is True
-        handle_approval_response(task_id, ApprovalAction.APPROVE)
+    # Now approve final outreach proposal
+    handle_approval_response(task_id, ApprovalAction.APPROVE)
     
     await orchestration_task
     
@@ -284,14 +262,14 @@ async def test_rejection_regeneration_loop(mock_tools):
     assert completed_msg["event_type"] == "TASK_COMPLETED"
     assert completed_msg["task_state"] == TaskState.COMPLETED
     
-    # 1 reject + 1 approve for step 1 + 2 remaining approves = 4 total approval events
+    # 1 reject + 1 approve = 2 total approval events
     approval_events = sum(1 for m in ws.sent_messages if m.get("event_type") == "APPROVAL_REQUIRED")
-    assert approval_events == 4, f"Expected 4 approval events, got {approval_events}"
+    assert approval_events == 2, f"Expected 2 approval events, got {approval_events}"
 
 @pytest.mark.asyncio
 async def test_max_regeneration_attempts(mock_tools):
     """
-    Test multiple rejections on vendor selection step, then approve and complete.
+    Test multiple rejections on final approval step, then approve and complete.
     """
     ws = MockWebSocket()
     task_id = "task-max-regen"
@@ -306,26 +284,16 @@ async def test_max_regeneration_attempts(mock_tools):
     )
     set_task_reference(task_id, orchestration_task)
     
-    # Reject vendor selection step 3 times
+    # Reject final approval step 3 times
     reject_count = 3
     for i in range(reject_count):
-        assert await wait_for_state(task_id, TaskState.WAITING_VENDOR_SELECTION) is True
-        handle_approval_response(task_id, ApprovalAction.REJECT, feedback=f"Feedback {i}")
+        assert await wait_for_state(task_id, TaskState.WAITING_FINAL_APPROVAL) is True
+        handle_approval_response(task_id, ApprovalAction.REJECT, feedback=f"Too expensive {i}")
+        await asyncio.sleep(0.05)
     
-    # Give orchestrator time to process rejection and re-enter WAITING_VENDOR_SELECTION
-    await asyncio.sleep(0.05)
-    assert await wait_for_state(task_id, TaskState.WAITING_VENDOR_SELECTION) is True
-    
-    vendors = [{"name": "TestVendor", "location": "TestLocation"}]
-    handle_approval_response(task_id, ApprovalAction.APPROVE, selected_vendors=vendors)
-    
-    # Approve remaining 2 steps (price approval, final approval)
-    for target_state in [
-        TaskState.WAITING_PRICE_APPROVAL,
-        TaskState.WAITING_FINAL_APPROVAL
-    ]:
-        assert await wait_for_state(task_id, target_state) is True
-        handle_approval_response(task_id, ApprovalAction.APPROVE)
+    # Give orchestrator time to process rejection and re-enter WAITING_FINAL_APPROVAL
+    assert await wait_for_state(task_id, TaskState.WAITING_FINAL_APPROVAL) is True
+    handle_approval_response(task_id, ApprovalAction.APPROVE)
     
     await orchestration_task
     
@@ -333,9 +301,9 @@ async def test_max_regeneration_attempts(mock_tools):
     assert completed_msg["event_type"] == "TASK_COMPLETED"
     assert completed_msg["task_state"] == TaskState.COMPLETED
     
-    # Total = reject_count + 3 approve events (vendor selection, price approval, final approval)
+    # Total = reject_count + 1 approve event = 4
     approval_events = sum(1 for m in ws.sent_messages if m.get("event_type") == "APPROVAL_REQUIRED")
-    assert approval_events == reject_count + 3, f"Expected {reject_count + 3} approval events, got {approval_events}"
+    assert approval_events == reject_count + 1, f"Expected {reject_count + 1} approval events, got {approval_events}"
 
 @pytest.mark.asyncio
 async def test_timeout_cancellation(mock_tools):

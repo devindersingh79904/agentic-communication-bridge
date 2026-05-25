@@ -67,7 +67,7 @@ interface AgentState {
   // Web socket controller actions
   connectWebSocket: (prompt: string) => void;
   disconnectWebSocket: () => void;
-  sendApprovalResponse: (action: ApprovalAction, feedback?: string, selectedVendors?: VendorResult[]) => void;
+  sendApprovalResponse: (action: ApprovalAction, feedback?: string) => void;
   sendStop: () => void;
   resetStore: (clearMessages?: boolean) => void;
 }
@@ -259,50 +259,25 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendApprovalResponse: (action, feedback, selectedVendors) => {
-    const { socket, taskId, correlationId, currentPendingStep } = get();
+  sendApprovalResponse: (action, feedback) => {
+    const { socket, taskId, correlationId } = get();
     set({ isAwaitingApproval: false });
 
     const feedbackMessage = feedback && feedback.trim() ? feedback.trim() : '';
-    const stepLabel = currentPendingStep
-      ? currentPendingStep.replace(/_/g, ' ').toLowerCase()
-      : 'step';
 
     if (action === 'APPROVE') {
-      if (selectedVendors && selectedVendors.length > 0) {
-        const names = selectedVendors.map(v => v.vendor_name || v.name).join(', ');
-        get().appendMessage({
-          sender: 'user',
-          text: `✅ Approved selection of: ${names}. Proceeding.`,
-        });
-      } else if (feedbackMessage) {
-        get().appendMessage({
-          sender: 'user',
-          text: `✅ Approved ${stepLabel} with feedback: "${feedbackMessage}"`,
-        });
-      } else {
-        get().appendMessage({
-          sender: 'user',
-          text: `✅ Approved ${stepLabel}. Proceeding.`,
-        });
-      }
-    } else if (action === 'REJECT') {
-      if (feedbackMessage) {
-        get().appendMessage({
-          sender: 'user',
-          text: `❌ Rejected ${stepLabel}. Feedback: "${feedbackMessage}"`,
-        });
-      } else {
-        get().appendMessage({
-          sender: 'user',
-          text: `❌ Rejected ${stepLabel}. Re-running.`,
-        });
-      }
-      set({ isRegenerating: true });
-    } else if (action === 'MODIFY_REQUEST') {
       get().appendMessage({
         sender: 'user',
-        text: `✍️ Requested Draft Modifications: "${feedbackMessage}"`,
+        text: feedbackMessage
+          ? `✅ Approved outreach proposal with feedback: "${feedbackMessage}"`
+          : `✅ Approved outreach proposal. Proceeding.`,
+      });
+    } else if (action === 'REJECT') {
+      get().appendMessage({
+        sender: 'user',
+        text: feedbackMessage
+          ? `❌ Rejected outreach proposal. Feedback: "${feedbackMessage}"`
+          : `❌ Rejected outreach proposal. Re-running.`,
       });
       set({ isRegenerating: true });
     }
@@ -315,7 +290,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           feedback: feedbackMessage || undefined,
           task_id: taskId,
           correlation_id: correlationId,
-          selected_vendors: selectedVendors || undefined,
         })
       );
     }

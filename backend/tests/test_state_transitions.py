@@ -21,18 +21,11 @@ async def test_valid_transitions():
     assert transition_task_state(task_id, TaskState.RUNNING) is True
     assert active_tasks[task_id]["task_state"] == TaskState.RUNNING
     
-    # RUNNING -> WAITING_VENDOR_SELECTION
-    assert transition_task_state(task_id, TaskState.WAITING_VENDOR_SELECTION) is True
-    assert active_tasks[task_id]["task_state"] == TaskState.WAITING_VENDOR_SELECTION
+    # RUNNING -> WAITING_FINAL_APPROVAL
+    assert transition_task_state(task_id, TaskState.WAITING_FINAL_APPROVAL) is True
+    assert active_tasks[task_id]["task_state"] == TaskState.WAITING_FINAL_APPROVAL
     
-    # WAITING_VENDOR_SELECTION -> RUNNING (e.g. Reject flow)
-    assert transition_task_state(task_id, TaskState.RUNNING) is True
-    assert active_tasks[task_id]["task_state"] == TaskState.RUNNING
-    
-    # RUNNING -> WAITING_PRICE_APPROVAL
-    assert transition_task_state(task_id, TaskState.WAITING_PRICE_APPROVAL) is True
-    
-    # WAITING_PRICE_APPROVAL -> COMPLETED
+    # WAITING_FINAL_APPROVAL -> COMPLETED
     assert transition_task_state(task_id, TaskState.COMPLETED) is True
     assert active_tasks[task_id]["task_state"] == TaskState.COMPLETED
 

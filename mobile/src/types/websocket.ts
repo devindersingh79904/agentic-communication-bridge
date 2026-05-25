@@ -5,9 +5,7 @@ export type TaskState =
   | 'SCHEDULED'
   | 'RUNNING'
   | 'SEARCHING_VENDORS'
-  | 'WAITING_VENDOR_SELECTION'
   | 'ANALYZING_PRICING'
-  | 'WAITING_PRICE_APPROVAL'
   | 'DRAFTING_OUTREACH'
   | 'SELF_REFLECTION'
   | 'WAITING_FINAL_APPROVAL'
@@ -125,7 +123,7 @@ export type ServerEvent =
   | PingEvent
   | PongEvent;
 
-export type ApprovalAction = 'APPROVE' | 'REJECT' | 'MODIFY_REQUEST';
+export type ApprovalAction = 'APPROVE' | 'REJECT';
 
 export interface ClientStartTaskEvent {
   event_type: 'START_TASK';
