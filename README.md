@@ -111,6 +111,15 @@ When designing a production-grade agentic runtime, there are several off-the-she
 
 ---
 
+## Concurrency & Idempotency Controls
+
+To ensure safety and correctness during concurrent operations or network retries, the system implements:
+- **Workflow Version Guard**: Every state change increments a `workflow_version` in the database. Client operations must submit the matching version; stale actions are rejected.
+- **Action Idempotency**: Modifying requests (`APPROVAL_RESPONSE`, `STOP`) contain a unique `action_id`.
+  - *Prototype Note*: For simplicity, `action_id` idempotency is tracked using an in-memory registry. A production-ready implementation should persist this in the database (e.g., using a Redis cache or relational database table with unique constraints).
+
+---
+
 ## Environment Configuration
 
 ### Backend Configuration
@@ -247,7 +256,7 @@ uv run pytest
 Current backend verification:
 
 ```text
-21 passed
+26 passed
 ```
 
 ---

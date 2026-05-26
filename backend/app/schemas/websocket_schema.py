@@ -79,6 +79,7 @@ class ApprovalResponseEvent(BaseWebSocketEvent):
     """
     event_type: WebSocketEventType = WebSocketEventType.APPROVAL_RESPONSE
     action: ApprovalAction
+    action_id: str
     feedback: Optional[str] = None
     selected_vendors: Optional[List[Dict[str, Any]]] = None
 
@@ -87,6 +88,7 @@ class StopEvent(BaseWebSocketEvent):
     Event received from client to cancel/stop the execution.
     """
     event_type: WebSocketEventType = WebSocketEventType.STOP
+    action_id: str
 
 class StartTaskEvent(BaseWebSocketEvent):
     """
@@ -103,9 +105,10 @@ class IncomingWebSocketEvent(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     event_type: WebSocketEventType
-    workflow_version: int = 1
+    workflow_version: Optional[int] = None
     task_id: Optional[str] = None
     prompt: Optional[str] = None
     action: Optional[ApprovalAction] = None
     feedback: Optional[str] = None
     selected_vendors: Optional[List[Dict[str, Any]]] = None
+    action_id: Optional[str] = None

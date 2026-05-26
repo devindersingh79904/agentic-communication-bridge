@@ -1,0 +1,15 @@
+# Root .gitignore to ignore OS and package files
+.DS_Store
+__MACOSX/
+*.zip
+*.tar.gz
+*.db
+*.log
+node_modules/
+.venv/
+.expo/
+.env
+__pycache__/
+*.pyc
+chroma_db/
+chroma/

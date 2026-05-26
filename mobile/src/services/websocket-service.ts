@@ -5,6 +5,7 @@ import { HTTP_BASE_URL, WS_BASE_URL, WS_AGENT_ENDPOINT } from '../constants/conf
 
 let timerId: any = null;
 let heartbeatTimerId: any = null;
+let pingTimerId: any = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let currentPromptRef = '';
@@ -42,6 +43,10 @@ export const connectAgentWS = (prompt: string) => {
     clearInterval(heartbeatTimerId);
     heartbeatTimerId = null;
   }
+  if (pingTimerId) {
+    clearInterval(pingTimerId);
+    pingTimerId = null;
+  }
 
   if (resumeTaskId) {
     store.setCurrentPrompt(prompt);
@@ -62,18 +67,32 @@ export const connectAgentWS = (prompt: string) => {
         const url = `${HTTP_BASE_URL}/v1/workflow/${resumeTaskId}`;
         const response = await fetch(url);
         if (response.ok) {
-          const body = await response.json();
-          if (body && body.data) {
-            const d = body.data;
+          const d = await response.json();
+          if (d && d.task_id) {
             store.setWorkflowVersion(d.workflow_version || 1);
-            if (d.reasoning_traces) store.setReasoningTraces(d.reasoning_traces);
-            if (d.vendors) store.setVendorResults(d.vendors);
-            if (d.selected_vendor) store.setSelectedVendor(d.selected_vendor);
-            if (d.selected_vendors) store.setSelectedVendors(d.selected_vendors);
-            if (d.pricing_analysis) store.setPricingAnalysis(d.pricing_analysis);
-            if (d.reflection_metadata) store.setReflectionMetadata(d.reflection_metadata);
-            if (d.draft_message) store.setDraftMessage(d.draft_message);
-            if (d.current_state) store.updateTaskState(d.current_state);
+            if (d.state) store.updateTaskState(d.state);
+            
+            if (d.messages && d.messages.length > 0) {
+              const parsedMessages = d.messages.map((m: any) => ({
+                ...m,
+                timestamp: m.timestamp ? new Date(m.timestamp) : new Date()
+              }));
+              useAgentStore.setState({ agentMessages: parsedMessages });
+            }
+            
+            const payload = d.approval_payload;
+            if (payload) {
+              if (payload.vendors) store.setVendorResults(payload.vendors);
+              if (payload.selected_vendor) store.setSelectedVendor(payload.selected_vendor);
+              if (payload.selected_vendors) store.setSelectedVendors(payload.selected_vendors);
+              if (payload.pricing_analysis) store.setPricingAnalysis(payload.pricing_analysis);
+              if (payload.reflection_metadata) store.setReflectionMetadata(payload.reflection_metadata);
+              if (payload.draft_message) store.setDraftMessage(payload.draft_message);
+              if (payload.agent_step) {
+                store.setCurrentPendingStep(payload.agent_step);
+                store.setIsAwaitingApproval(true);
+              }
+            }
           }
         }
       } catch (err) {
@@ -126,6 +145,19 @@ export const connectAgentWS = (prompt: string) => {
           ws.close();
         }
       }, 10000);
+
+      // Start client-to-server PING heartbeat loop
+      pingTimerId = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              event_type: CLIENT_EVENTS.PING,
+              correlation_id: useAgentStore.getState().correlationId || '',
+              task_id: useAgentStore.getState().taskId || '',
+            })
+          );
+        }
+      }, 20000);
     };
 
     ws.onmessage = (event) => {
@@ -414,6 +446,7 @@ export const connectAgentWS = (prompt: string) => {
     ws.onerror = () => {
       if (timerId) { clearInterval(timerId); timerId = null; }
       if (heartbeatTimerId) { clearInterval(heartbeatTimerId); heartbeatTimerId = null; }
+      if (pingTimerId) { clearInterval(pingTimerId); pingTimerId = null; }
       
       store.setConnectionStatus('error');
       store.setError('WebSocket connection error');
@@ -432,6 +465,7 @@ export const connectAgentWS = (prompt: string) => {
       
       if (timerId) { clearInterval(timerId); timerId = null; }
       if (heartbeatTimerId) { clearInterval(heartbeatTimerId); heartbeatTimerId = null; }
+      if (pingTimerId) { clearInterval(pingTimerId); pingTimerId = null; }
 
       // Reconnect strategy if closed unexpectedly during run states
       const stateBeforeClose = store.taskState;
@@ -451,7 +485,8 @@ export const connectAgentWS = (prompt: string) => {
 
       if (isIntermediate && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+        const retryDelays = [1000, 2000, 5000, 10000];
+        const delay = retryDelays[reconnectAttempts - 1] || 10000;
         store.appendMessage({
           sender: 'system',
           text: `Disconnected unexpectedly. Reconnecting in ${delay / 1000}s (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`,
@@ -471,6 +506,7 @@ export const connectAgentWS = (prompt: string) => {
   } catch (error: any) {
     if (timerId) { clearInterval(timerId); timerId = null; }
     if (heartbeatTimerId) { clearInterval(heartbeatTimerId); heartbeatTimerId = null; }
+    if (pingTimerId) { clearInterval(pingTimerId); pingTimerId = null; }
     
     store.setConnectionStatus('error');
     store.setError(error.message || 'Failed connecting');
@@ -490,6 +526,10 @@ export const disconnectAgentWS = () => {
   if (heartbeatTimerId) {
     clearInterval(heartbeatTimerId);
     heartbeatTimerId = null;
+  }
+  if (pingTimerId) {
+    clearInterval(pingTimerId);
+    pingTimerId = null;
   }
   useAgentStore.getState().disconnectWebSocket();
 };

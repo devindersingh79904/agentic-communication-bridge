@@ -12,5 +12,6 @@ export const CLIENT_EVENTS = {
   START_TASK: 'START_TASK',
   APPROVAL_RESPONSE: 'APPROVAL_RESPONSE',
   STOP: 'STOP',
+  PING: 'PING',
   PONG: 'PONG',
 } as const;

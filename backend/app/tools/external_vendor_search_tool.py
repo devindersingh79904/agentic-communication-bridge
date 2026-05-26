@@ -106,12 +106,18 @@ EXTERNAL_MOCK_DATA = {
     ]
 }
 
-async def external_vendor_search_tool(query: str, category: str) -> Dict[str, Any]:
+async def external_vendor_search_tool(
+    query: str, 
+    category: str,
+    city: str = "Bangalore",
+    locality: str = "Marathahalli",
+    pincode: str = "560037"
+) -> Dict[str, Any]:
     """
     Optional web-search-based vendor discovery.
     Integrates with Tavily if API key is provided, otherwise falls back to a realistic mock search.
     """
-    logger.info(f"Executing external vendor search for query: '{query}' in category '{category}'")
+    logger.info(f"Executing external vendor search for query: '{query}' in locality={locality}, city={city}, pincode={pincode}, category={category}")
     
     # Input Schema validation
     input_data = ExternalSearchInput(query=query, category=category)
@@ -130,7 +136,7 @@ async def external_vendor_search_tool(query: str, category: str) -> Dict[str, An
                     "https://api.tavily.com/search",
                     json={
                         "api_key": config.TAVILY_API_KEY,
-                        "query": f"{query} vendor in Bangalore {category}",
+                        "query": f"{query} vendor in {locality} {city} {pincode} {category}",
                         "search_depth": "basic",
                         "include_answer": False
                     }

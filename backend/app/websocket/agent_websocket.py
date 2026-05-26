@@ -8,8 +8,8 @@ from app.core.logger import get_logger, set_correlation_id, set_task_id, correla
 from app.core.enums import WebSocketEventType, AgentStep, TaskState
 from app.models.workflow_models import RuntimeWorkflowState
 from app.models.workflow_state import WorkflowState
-from app.runtime.event_streamer import build_approval_required_event, build_pricing_payload
-from app.schemas.websocket_schema import IncomingWebSocketEvent
+from app.runtime.event_streamer import build_approval_required_event, build_pricing_payload, build_cancelled_event
+from app.schemas.websocket_schema import IncomingWebSocketEvent, ErrorEvent
 from app.services.agent_orchestrator_service import active_tasks
 from app.storage.workflow_repository import workflow_repo
 from app.utils.time import utc_now_iso
@@ -84,6 +84,13 @@ async def websocket_endpoint(websocket: WebSocket):
             event_type = incoming.event_type
             incoming_version = incoming.workflow_version if "workflow_version" in payload else None
             
+            action_id = incoming.action_id
+            if action_id:
+                if workflow_runtime.is_action_processed(action_id):
+                    logger.info(f"Duplicate action_id {action_id} ignored.")
+                    continue
+                workflow_runtime.mark_action_processed(action_id)
+                
             if event_type == WebSocketEventType.START_TASK:
                 if orchestration_started:
                     continue
@@ -113,6 +120,38 @@ async def websocket_endpoint(websocket: WebSocket):
                             RuntimeWorkflowState.CANCELLED: TaskState.CANCELLED
                         }
                         ui_state = tool_state_map.get(existing_session.status, TaskState.RUNNING)
+
+                        # Check if the orchestration background task is currently active/running.
+                        # Since Starlette TestClient cancels background tasks when the connection block exits,
+                        # we restart the loop if it is not in _active_tasks but the database session is not terminal.
+                        from app.runtime.workflow_runtime import _active_tasks, _active_events
+
+                        task_active = client_task_id in _active_tasks and not _active_tasks[client_task_id].done()
+
+                        if not task_active and existing_session.status not in (RuntimeWorkflowState.COMPLETED, RuntimeWorkflowState.FAILED, RuntimeWorkflowState.CANCELLED):
+                            logger.info("Orchestration loop task for %s is dead/inactive. Restarting...", client_task_id)
+                            approval_event = await workflow_runtime.start_orchestration(
+                                client_task_id, existing_session.user_prompt, correlation_id
+                            )
+                        else:
+                            approval_event = _active_events.get(client_task_id)
+                            if not approval_event:
+                                approval_event = asyncio.Event()
+                                _active_events[client_task_id] = approval_event
+
+                        # Register or update in the active_tasks compatibility registry
+                        active_tasks[client_task_id] = {
+                            "websocket": websocket,
+                            "task": _active_tasks.get(client_task_id),
+                            "approval_event": approval_event,
+                            "task_state": ui_state,
+                            "cancelled": False,
+                            "terminal_emitted": False,
+                            "workflow_state": legacy_state,
+                            "correlation_id": correlation_id,
+                            "terminal_lock": asyncio.Lock(),
+                            "last_activity_time": asyncio.get_event_loop().time(),
+                        }
 
                         await websocket.send_json({
                             "event_type": WebSocketEventType.STATUS_UPDATE,
@@ -179,6 +218,46 @@ async def websocket_endpoint(websocket: WebSocket):
                 
             elif event_type == WebSocketEventType.APPROVAL_RESPONSE:
                 if incoming.action:
+                    session = workflow_repo.get_session(task_id)
+                    if session:
+                        legacy_state = WorkflowState.from_json(session.workflow_state_json)
+                        ui_state_map = {
+                            RuntimeWorkflowState.CREATED: TaskState.SCHEDULED,
+                            RuntimeWorkflowState.PLANNING: TaskState.SEARCHING_VENDORS,
+                            RuntimeWorkflowState.EXECUTING: legacy_state.current_step or TaskState.RUNNING,
+                            RuntimeWorkflowState.WAITING_APPROVAL: legacy_state.current_step or TaskState.WAITING_VENDOR_SELECTION,
+                            RuntimeWorkflowState.APPROVED: legacy_state.current_step or TaskState.RUNNING,
+                            RuntimeWorkflowState.REJECTED: legacy_state.current_step or TaskState.RUNNING,
+                            RuntimeWorkflowState.COMPLETED: TaskState.COMPLETED,
+                            RuntimeWorkflowState.FAILED: TaskState.FAILED,
+                            RuntimeWorkflowState.CANCELLED: TaskState.CANCELLED,
+                        }
+                        ui_state = ui_state_map.get(session.status, TaskState.RUNNING)
+
+                        if incoming_version is None or incoming_version != session.workflow_version:
+                            logger.warning(f"Rejecting approval event for {task_id}: version mismatch (client version={incoming_version}, server version={session.workflow_version})")
+                            error_payload = ErrorEvent(
+                                correlation_id=correlation_id,
+                                task_id=task_id,
+                                task_state=ui_state,
+                                error_code="STALE_WORKFLOW_VERSION",
+                                message="Workflow state changed. Please refresh latest state."
+                            )
+                            await websocket.send_json(error_payload.model_dump())
+                            continue
+
+                        if not incoming.action_id:
+                            logger.warning(f"Rejecting approval event for {task_id}: missing action ID")
+                            error_payload = ErrorEvent(
+                                correlation_id=correlation_id,
+                                task_id=task_id,
+                                task_state=ui_state,
+                                error_code="MISSING_ACTION_ID",
+                                message="Action ID is missing."
+                            )
+                            await websocket.send_json(error_payload.model_dump())
+                            continue
+
                     await workflow_runtime.handle_approval_response(
                         task_id=task_id,
                         action=incoming.action,
@@ -191,12 +270,99 @@ async def websocket_endpoint(websocket: WebSocket):
                     
             elif event_type == WebSocketEventType.STOP:
                 logger.info("STOP signal received from client.")
-                # Verify version to prevent stale STOP signals
                 session = workflow_repo.get_session(task_id)
-                if session and (incoming_version is None or incoming_version == session.workflow_version):
-                    await workflow_runtime.cleanup_session(task_id)
-                else:
+                if not session:
+                    logger.warning("STOP received for unknown session.")
+                    continue
+                
+                legacy_state = WorkflowState.from_json(session.workflow_state_json)
+                ui_state_map = {
+                    RuntimeWorkflowState.CREATED: TaskState.SCHEDULED,
+                    RuntimeWorkflowState.PLANNING: TaskState.SEARCHING_VENDORS,
+                    RuntimeWorkflowState.EXECUTING: legacy_state.current_step or TaskState.RUNNING,
+                    RuntimeWorkflowState.WAITING_APPROVAL: legacy_state.current_step or TaskState.WAITING_VENDOR_SELECTION,
+                    RuntimeWorkflowState.APPROVED: legacy_state.current_step or TaskState.RUNNING,
+                    RuntimeWorkflowState.REJECTED: legacy_state.current_step or TaskState.RUNNING,
+                    RuntimeWorkflowState.COMPLETED: TaskState.COMPLETED,
+                    RuntimeWorkflowState.FAILED: TaskState.FAILED,
+                    RuntimeWorkflowState.CANCELLED: TaskState.CANCELLED,
+                }
+                ui_state = ui_state_map.get(session.status, TaskState.RUNNING)
+
+                # Check version conflict strictly
+                if incoming_version is None or incoming_version != session.workflow_version:
                     logger.warning("Stale STOP signal version check failed.")
+                    error_payload = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=ui_state,
+                        error_code="STALE_WORKFLOW_VERSION",
+                        message="Workflow state changed. Please refresh latest state."
+                    )
+                    await websocket.send_json(error_payload.model_dump())
+                    continue
+
+                if not incoming.action_id:
+                    logger.warning(f"Rejecting STOP event for {task_id}: missing action ID")
+                    error_payload = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=ui_state,
+                        error_code="MISSING_ACTION_ID",
+                        message="Action ID is missing."
+                    )
+                    await websocket.send_json(error_payload.model_dump())
+                    continue
+
+                # Handle STOP in terminal states
+                if session.status == RuntimeWorkflowState.COMPLETED:
+                    logger.info("STOP received for COMPLETED session. Ignoring.")
+                    error_payload = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.COMPLETED,
+                        error_code="ALREADY_COMPLETED",
+                        message="The task has already completed."
+                    )
+                    await websocket.send_json(error_payload.model_dump())
+                    continue
+                elif session.status == RuntimeWorkflowState.CANCELLED:
+                    logger.info("STOP received for CANCELLED session. Ignoring.")
+                    error_payload = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.CANCELLED,
+                        error_code="ALREADY_CANCELLED",
+                        message="The task is already cancelled."
+                    )
+                    await websocket.send_json(error_payload.model_dump())
+                    continue
+                elif session.status == RuntimeWorkflowState.FAILED:
+                    logger.info("STOP received for FAILED session. Ignoring.")
+                    error_payload = ErrorEvent(
+                        correlation_id=correlation_id,
+                        task_id=task_id,
+                        task_state=TaskState.FAILED,
+                        error_code="ALREADY_FAILED",
+                        message="The task has already failed."
+                    )
+                    await websocket.send_json(error_payload.model_dump())
+                    continue
+
+                # Cancel session safely
+                await workflow_runtime.cancel_session(task_id)
+                
+                # Send TASK_CANCELLED explicitly before cleanup
+                cancel_event = build_cancelled_event(
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    workflow_version=session.workflow_version,
+                    message="Task cancelled by user."
+                )
+                await websocket.send_json(cancel_event.model_dump())
+                
+                # Cleanup session after sending the cancel event
+                await workflow_runtime.cleanup_session(task_id)
 
             elif event_type == WebSocketEventType.PONG:
                 logger.debug("Received PONG heartbeat response.")

@@ -1,7 +1,10 @@
 import logging
+import re
+import json
 from typing import Dict, Any, Optional
 from app.models.workflow_state import WorkflowState
 from app.core.enums import TaskState
+from app.core import config
 from app.services.llm_service import _llm_call
 from app.utils.time import utc_now_iso
 from app.tools.vendor_search_tool import vendor_search_tool
@@ -119,7 +122,7 @@ class AgentPlanner:
         prompt_lower = prompt.lower()
         
         keywords = {
-            "computer": ["computer", "laptop", "pc", "desktop", "server", "hardware", "macbook", "monitor", "screen", "keyboard", "gaming rig", "workstation"],
+            "computer": ["computer", "laptop", "pc", "desktop", "server", "computer hardware", "it hardware", "network hardware", "macbook", "monitor", "screen", "keyboard", "gaming rig", "workstation"],
             "transport": ["transport", "logistics", "delivery", "truck", "van", "courier", "shipping", "bike", "cargo", "movers", "ev hire", "transit"],
             "food": ["food", "catering", "lunch", "meal", "buffet", "snack", "organic", "sweet", "catering", "bites", "beverage", "pastry"],
             "stationery": ["stationery", "paper", "notebook", "pen", "marker", "chair", "stapler", "office supplies", "whiteboard", "easel", "supplies"]
@@ -146,18 +149,54 @@ class AgentPlanner:
         logger.info("Category detection: no keywords matched. Falling back to LLM.")
         system_prompt = (
             "You are a procurement classification agent. Analyze the user's request and classify "
-            "it into exactly one of the following categories: computer, transport, food, stationery. "
+            "it into exactly one of the following categories: computer, transport, food, stationery, other. "
+            "If the request does not fit computer, transport, food, or stationery, return 'other'. "
             "Return ONLY the category name in lowercase. No other text, no formatting."
         )
         try:
             category = await _llm_call("category_detection", system_prompt, prompt, max_tokens=10)
             category = category.strip().lower()
-            if category in ["computer", "transport", "food", "stationery"]:
+            if category in ["computer", "transport", "food", "stationery", "other"]:
                 logger.info(f"Classified prompt category via LLM as: '{category}'")
                 return category
         except Exception as e:
             logger.warning(f"Failed to detect category for prompt via LLM: {e}")
         return "computer"
+
+    async def extract_location_context(self, prompt: str) -> Dict[str, Optional[str]]:
+        """
+        Uses LLM to extract city, locality, and pincode ONLY if they are explicitly
+        mentioned in the user prompt. Returns None for any unmentioned field.
+        """
+        system_prompt = (
+            "You are a geography and location extraction assistant. Analyze the user prompt and extract "
+            "the target city, locality, and pincode only if explicitly mentioned. "
+            "Return a raw JSON object of structure:\n"
+            "{\n"
+            '  "city": "<extracted city or null>",\n'
+            '  "locality": "<extracted locality or null>",\n'
+            '  "pincode": "<extracted pincode or null>"\n'
+            "}\n"
+            "Return ONLY the raw JSON object. No explanation, no markdown formatting."
+        )
+        try:
+            res = await _llm_call("extract_location", system_prompt, prompt, max_tokens=150)
+            json_match = re.search(r'\{.*\}', res, re.DOTALL)
+            if json_match:
+                res = json_match.group(0)
+            data = json.loads(res)
+            return {
+                "city": data.get("city") if data.get("city") and str(data.get("city")).lower() != "null" else None,
+                "locality": data.get("locality") if data.get("locality") and str(data.get("locality")).lower() != "null" else None,
+                "pincode": data.get("pincode") if data.get("pincode") and str(data.get("pincode")).lower() != "null" else None
+            }
+        except Exception as e:
+            logger.warning(f"Failed to extract location context via LLM: {e}")
+            return {
+                "city": None,
+                "locality": None,
+                "pincode": None
+            }
 
     async def decide_next_action(self, state: WorkflowState) -> Dict[str, Any]:
         """
@@ -463,39 +502,112 @@ class AgentPlanner:
         """
         logger.info(f"Planner starting research step for task {task_id}")
         
-        # 1. Detect Category
-        category = await self.detect_category(state.prompt)
+        # 1. Extract location context if not already set
+        if not state.constraints.get("location_extracted"):
+            extracted_loc = await self.extract_location_context(state.prompt)
+            state.constraints.update({
+                "city": extracted_loc.get("city"),
+                "locality": extracted_loc.get("locality"),
+                "pincode": extracted_loc.get("pincode"),
+                "location_extracted": True
+            })
+            logger.info(f"Extracted location context: city={extracted_loc.get('city')}, locality={extracted_loc.get('locality')}, pincode={extracted_loc.get('pincode')}")
+
+        city = state.constraints.get("city") or config.DEFAULT_CITY
+        locality = state.constraints.get("locality") or config.DEFAULT_LOCALITY
+        pincode = state.constraints.get("pincode") or config.DEFAULT_PINCODE
+
+        location_explicitly_provided = any([
+            state.constraints.get("city") is not None,
+            state.constraints.get("locality") is not None,
+            state.constraints.get("pincode") is not None
+        ])
+
+        # 2. Refine query and detect category
+        search_query = state.prompt
+        if state.rejection_feedback:
+            logger.info(f"Refining search query using rejection feedback: '{state.rejection_feedback}'")
+            system_prompt = (
+                "You are a search query refinement agent. Given the original user request and the feedback on the rejected results, "
+                "generate a refined search query to locate better vendors. Return ONLY the refined search query string. "
+                "Keep it concise (no extra explanation, no quotes)."
+            )
+            user_content = f"Original Query: {state.prompt}\nRejection Feedback: {state.rejection_feedback}"
+            try:
+                refined = await _llm_call("refine_search_query", system_prompt, user_content, max_tokens=100)
+                search_query = refined.strip()
+                logger.info(f"Refined search query: '{search_query}'")
+            except Exception as e:
+                logger.warning(f"Failed to refine query via LLM: {e}")
+
+        category = await self.detect_category(search_query)
+        rag_category = None if category == "other" else category
+
+        # Formulate RAG search query (include location context if explicitly provided)
+        rag_search_query = search_query
+        if location_explicitly_provided:
+            loc_parts = []
+            if state.constraints.get("locality"):
+                loc_parts.append(state.constraints.get("locality"))
+            if state.constraints.get("city"):
+                loc_parts.append(state.constraints.get("city"))
+            if state.constraints.get("pincode"):
+                loc_parts.append(state.constraints.get("pincode"))
+            rag_search_query = f"{search_query} in " + ", ".join(loc_parts)
+            logger.info(f"Using location-aware RAG search query: '{rag_search_query}'")
         
-        # 2. Query Internal RAG
-        internal_results = await vendor_search_tool(query=state.prompt, category=category)
+        # 3. Query Internal RAG
+        internal_results = await vendor_search_tool(query=rag_search_query, category=rag_category)
         internal_vendors = internal_results.get("vendors", [])
         confidence = internal_results.get("confidence", 0.0)
         state.internal_rag_confidence = confidence
         
-        # 3. Decision: Trigger external search?
-        # Triggered if confidence is low (< 0.7) OR if user explicitly asks for external/web search
-        user_explicit = any(word in state.prompt.lower() for word in ["external", "web", "online", "internet", "google", "search"])
+        # 4. Decision: Trigger external search?
+        # Triggered if confidence is low (< 0.7) OR if user explicitly asks for external/web search OR if location was explicitly provided
+        user_explicit = any(word in search_query.lower() for word in ["external", "web", "online", "internet", "google", "search"])
+        trigger_external = (confidence < 0.7) or user_explicit or location_explicitly_provided
         
         external_vendors = []
-        if confidence < 0.7 or user_explicit:
-            logger.info(f"Planner decision: Internal RAG confidence {confidence:.2f} is low or explicit web search requested. Triggering external search.")
+        if trigger_external:
+            logger.info(f"Planner decision: Triggering external search (confidence={confidence:.2f}, user_explicit={user_explicit}, location_explicit={location_explicitly_provided}).")
             # Transition state to EXTERNAL_SEARCHING via callback
             await transition_callback(TaskState.EXTERNAL_SEARCHING)
             
-            # Run external vendor search tool
-            external_results = await external_vendor_search_tool(query=state.prompt, category=category)
+            # Run external vendor search tool with dynamic location parameters
+            external_results = await external_vendor_search_tool(
+                query=search_query,
+                category=category,
+                city=city,
+                locality=locality,
+                pincode=pincode
+            )
             external_vendors = external_results.get("vendors", [])
             
             # Transition state back to RUNNING
             await transition_callback(TaskState.RUNNING)
             
         all_vendors = internal_vendors + external_vendors
+        if state.rejected_vendors:
+            rejected_set = set(state.rejected_vendors)
+            logger.info(f"Filtering out previously rejected vendors: {rejected_set}")
+            all_vendors = [
+                v for v in all_vendors 
+                if (v.get("vendor_name") or v.get("name")) not in rejected_set
+            ]
+            
         if not all_vendors:
             logger.warning(
                 "Planner research returned no vendors for category '%s'. Applying local sample fallback.",
                 category,
             )
-            all_vendors = self._fallback_vendors_for_category(category, top_k=3)
+            fallback = self._fallback_vendors_for_category(category, top_k=15)
+            if state.rejected_vendors:
+                rejected_set = set(state.rejected_vendors)
+                fallback = [
+                    v for v in fallback 
+                    if (v.get("vendor_name") or v.get("name")) not in rejected_set
+                ]
+            all_vendors = fallback[:3]
         
         # Aggregate results back to workflow state
         state.research_data = {

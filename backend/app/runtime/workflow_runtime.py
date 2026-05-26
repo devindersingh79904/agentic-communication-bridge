@@ -6,7 +6,7 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
 from app.core import config
-from app.core.logger import get_logger, set_correlation_id, set_task_id
+from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
 from app.core.enums import TaskState, AgentStep, ApprovalAction, WebSocketEventType
 from app.models.workflow_models import WorkflowSession, ExecutionPlan, RuntimeWorkflowState, PlanStep
 from app.models.workflow_state import WorkflowState
@@ -33,8 +33,16 @@ logger = get_logger("runtime.workflow_runtime")
 _active_tasks: Dict[str, asyncio.Task] = {}
 _active_events: Dict[str, asyncio.Event] = {}
 _tasks_lock = asyncio.Lock()
+_processed_actions = set()
 
 class WorkflowRuntime:
+    def is_action_processed(self, action_id: str) -> bool:
+        """Checks if an action_id has already been processed."""
+        return action_id in _processed_actions
+
+    def mark_action_processed(self, action_id: str) -> None:
+        """Marks an action_id as processed to enforce idempotency."""
+        _processed_actions.add(action_id)
     async def get_or_create_session(self, task_id: str, prompt: str) -> WorkflowSession:
         """
         Loads an existing session from DB or starts a fresh session context.
@@ -92,17 +100,18 @@ class WorkflowRuntime:
         if not session:
             logger.warning(f"Approval received for unknown task {task_id}")
             return
-
         # 1. Version conflict guard
-        if incoming_version is not None and incoming_version != session.workflow_version:
+        if incoming_version is None or incoming_version != session.workflow_version:
             logger.warning(f"Rejecting approval event for {task_id}: version mismatch (client version={incoming_version}, server version={session.workflow_version})")
+            legacy_state = WorkflowState.from_json(session.workflow_state_json)
+            current_ui_state = legacy_state.current_step or TaskState.RUNNING
             # Emit error to client
             error_payload = ErrorEvent(
                 correlation_id=connection_manager.get_correlation_id(task_id),
                 task_id=task_id,
-                task_state=TaskState.FAILED,
-                error_code="VERSION_CONFLICT",
-                message="Your client is out of sync. Please reload to restore state."
+                task_state=current_ui_state,
+                error_code="STALE_WORKFLOW_VERSION",
+                message="Workflow state changed. Please refresh latest state."
             )
             await connection_manager.send_json(task_id, error_payload.model_dump())
             return
@@ -157,6 +166,11 @@ class WorkflowRuntime:
         else:
             if current_waiting_state == TaskState.WAITING_VENDOR_SELECTION:
                 legacy_state.vendor_selection_approved = False
+                if legacy_state.research_data and "vendors" in legacy_state.research_data:
+                    for v in legacy_state.research_data["vendors"]:
+                        vname = v.get("vendor_name") or v.get("name")
+                        if vname and vname not in legacy_state.rejected_vendors:
+                            legacy_state.rejected_vendors.append(vname)
             elif current_waiting_state == TaskState.WAITING_PRICE_APPROVAL:
                 legacy_state.price_approval_approved = False
             elif current_waiting_state == TaskState.WAITING_FINAL_APPROVAL:
@@ -189,16 +203,6 @@ class WorkflowRuntime:
                 task.cancel()
                 logger.info(f"Background task for {task_id} cancelled.")
             _active_events.pop(task_id, None)
-
-        # Close WebSocket connection explicitly
-        ws = connection_manager.get_socket(task_id)
-        if ws:
-            try:
-                await ws.close()
-            except Exception:
-                pass
-        # Clear connection references
-        await connection_manager.unregister(task_id)
 
     def _prepare_final_draft_regeneration(self, session: WorkflowSession, feedback: str) -> bool:
         """
@@ -251,9 +255,8 @@ class WorkflowRuntime:
         """
         The background runner execution orchestrator loop.
         """
-        set_correlation_id(correlation_id)
-        set_task_id(task_id)
-        
+        corr_token = set_correlation_id(correlation_id)
+        task_token = set_task_id(task_id)
         logger.info(f"Orchestration loop started for task {task_id}")
         session = await self.get_or_create_session(task_id, prompt)
         
@@ -493,18 +496,8 @@ class WorkflowRuntime:
                 )
                 await connection_manager.send_json(task_id, completed_event.model_dump())
                 logger.info(f"Task {task_id} completed successfully.")
-
         except asyncio.CancelledError:
             logger.warning(f"Task loop cancelled for {task_id}")
-            # Emmit cancellation update
-            cancel_event = build_cancelled_event(
-                correlation_id=correlation_id,
-                task_id=task_id,
-                workflow_version=session.workflow_version,
-                message="Orchestration cancelled by client.",
-            )
-            await connection_manager.send_json(task_id, cancel_event.model_dump())
-            
         except Exception as e:
             logger.exception(f"Unexpected orchestration failure for {task_id}")
             error_event = ErrorEvent(
@@ -515,12 +508,15 @@ class WorkflowRuntime:
                 message=f"An unexpected orchestration error occurred: {str(e)}"
             )
             await connection_manager.send_json(task_id, error_event.model_dump())
-            
         finally:
             # Ephemeral memory purge of active tasks references
             async with _tasks_lock:
                 _active_tasks.pop(task_id, None)
                 _active_events.pop(task_id, None)
+            correlation_id_ctx.reset(corr_token)
+            task_id_ctx.reset(task_token)
+
+
 
     def _check_approval_gate(self, step: PlanStep, session: WorkflowSession) -> tuple[bool, Optional[AgentStep], Optional[TaskState], str]:
         """

@@ -80,13 +80,18 @@ class ExecutionEngine:
 
     def _resolve_next_step(self, session: WorkflowSession) -> Optional[PlanStep]:
         """
-        Scans steps to find the next step whose depends_on steps are all "completed".
+        Scans steps to find the next step whose depends_on steps are all "completed"
+        (or not present in the current plan).
         """
+        plan_step_ids = {s.step_id for s in session.execution_plan.plan}
         completed_step_ids = {s.step_id for s in session.execution_plan.plan if s.status == "completed"}
         
         for step in session.execution_plan.plan:
             if step.status == "pending":
-                deps_satisfied = all(dep in completed_step_ids for dep in step.depends_on)
+                deps_satisfied = all(
+                    (dep in completed_step_ids) or (dep not in plan_step_ids)
+                    for dep in step.depends_on
+                )
                 if deps_satisfied:
                     return step
         return None

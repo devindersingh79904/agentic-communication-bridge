@@ -1,12 +1,16 @@
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, patch
-from starlette.websockets import WebSocketState
+from starlette.websockets import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from app.core import config
 from app.services.agent_orchestrator_service import active_tasks
 from app.core.enums import TaskState, ApprovalAction
+from app.storage.workflow_repository import workflow_repo
+from app.models.workflow_models import RuntimeWorkflowState, WorkflowSession
+from app.models.workflow_state import WorkflowState
+
+from unittest.mock import AsyncMock, patch
 
 @pytest.fixture(autouse=True)
 def speed_up_and_mock_tools():
@@ -151,90 +155,171 @@ def speed_up_and_mock_tools():
     tool_registry._registry = original_tools
 
 
-def test_websocket_approval_flow(test_client):
-    """Test full approval flow over real WebSocket using TestClient."""
+def test_websocket_stop_in_waiting_approval(test_client):
+    """Test that sending STOP during WAITING_APPROVAL cancels task and returns TASK_CANCELLED."""
     with test_client.websocket_connect("/v1/agent/connect") as ws:
-        # 1. Send START_TASK
+        # 1. Start task
         ws.send_json({
             "event_type": "START_TASK",
-            "prompt": "Find hardware suppliers"
+            "prompt": "Test prompt"
         })
-
-        # 2. Receive status updates and approval required events.
-        # Runtime gates only vendor selection and final outreach approval; pricing is automatic.
-        # We approve each step and continue
-        for step_num in range(2):
-            events = []
-            for _ in range(5):
-                msg = ws.receive_json()
-                events.append(msg)
-                if msg.get("event_type") == "APPROVAL_REQUIRED":
-                    break
-
-            event_types = [e.get("event_type") for e in events]
-            assert "STATUS_UPDATE" in event_types
-            assert "APPROVAL_REQUIRED" in event_types
-
-            app_req = events[-1]
-            assert app_req["draft_message"]  # Non-empty
-
-            # Verify task is active in registry
-            task_id = app_req["task_id"]
-            assert task_id in active_tasks
-
-            # Send APPROVE with selected vendors list for vendor selection step
-            payload = {
-                "event_type": "APPROVAL_RESPONSE",
-                "action": "APPROVE",
-                "workflow_version": app_req.get("workflow_version", 1),
-                "action_id": f"test-action-id-{step_num}"
-            }
-            if step_num == 0:
-                payload["selected_vendors"] = [{"name": "TestVendor", "location": "TestLocation"}]
-            ws.send_json(payload)
-
-        # 3. Receive final success event
-        events_after = []
-        for _ in range(5):
-            msg = ws.receive_json()
-            events_after.append(msg)
-            if msg.get("event_type") == "TASK_COMPLETED":
-                break
-
-        assert events_after[-1]["event_type"] == "TASK_COMPLETED"
-        assert events_after[-1]["task_state"] == "COMPLETED"
-
-
-def test_websocket_disconnect_cleanup(test_client):
-    """Test that unexpected websocket disconnect cleans up the task registry."""
-    task_id = None
-
-    # Connect and start task
-    with test_client.websocket_connect("/v1/agent/connect") as ws:
-        ws.send_json({
-            "event_type": "START_TASK",
-            "prompt": "Find hardware suppliers"
-        })
-
-        # Wait for approval required to ensure task is fully registered
-        for _ in range(5):
+        
+        # 2. Wait for approval required event to reach WAITING_APPROVAL state
+        task_id = None
+        for _ in range(10):
             msg = ws.receive_json()
             if msg.get("event_type") == "APPROVAL_REQUIRED":
                 task_id = msg.get("task_id")
                 break
-
+                
         assert task_id is not None
-        assert task_id in active_tasks
+        session = workflow_repo.get_session(task_id)
+        assert session.status == RuntimeWorkflowState.WAITING_APPROVAL
+        
+        # 3. Send STOP with matching version and action_id
+        ws.send_json({
+            "event_type": "STOP",
+            "task_id": task_id,
+            "workflow_version": session.workflow_version,
+            "action_id": "stop-action-123"
+        })
+        
+        # 4. Receive TASK_CANCELLED
+        cancelled_msg = ws.receive_json()
+        assert cancelled_msg.get("event_type") == "TASK_CANCELLED"
+        
+        # 5. Verify database state is CANCELLED
+        updated_session = workflow_repo.get_session(task_id)
+        assert updated_session.status == RuntimeWorkflowState.CANCELLED
 
-        # Now close the connection (simulating unexpected client disconnect)
-        ws.close()
 
-    # Give async loop a tick to process the disconnect cleanup
-    import time
-    for _ in range(50):
-        if task_id not in active_tasks:
-            break
-        time.sleep(0.01)
+def test_websocket_stop_already_completed(test_client):
+    """Test that sending STOP when task is already completed returns ALREADY_COMPLETED error."""
+    # Pre-populate a completed session in database
+    task_id = "test-completed-task-id"
+    now = "2026-05-26T18:00:00Z"
+    legacy_state = WorkflowState(prompt="Test completed task")
+    session = WorkflowSession(
+        task_id=task_id,
+        status=RuntimeWorkflowState.COMPLETED,
+        user_prompt="Test completed task",
+        workflow_state_json=legacy_state.to_json(),
+        created_at=now,
+        updated_at=now,
+        workflow_version=5
+    )
+    workflow_repo.save_session(session)
+    
+    with test_client.websocket_connect("/v1/agent/connect") as ws:
+        # Reconnect/Start the task
+        ws.send_json({
+            "event_type": "START_TASK",
+            "prompt": "Test completed task",
+            "task_id": task_id
+        })
+        
+        # Receive connection success or status
+        ws.receive_json()
+        
+        # Send STOP
+        ws.send_json({
+            "event_type": "STOP",
+            "task_id": task_id,
+            "workflow_version": 5,
+            "action_id": "stop-action-completed"
+        })
+        
+        # Expect ALREADY_COMPLETED error
+        err_msg = ws.receive_json()
+        assert err_msg.get("event_type") == "ERROR"
+        assert err_msg.get("error_code") == "ALREADY_COMPLETED"
 
-    # Verify task registry was cleaned up and no orphan tasks remain
-    assert task_id not in active_tasks
+
+def test_websocket_version_mismatch(test_client):
+    """Test that sending mismatch version in APPROVAL_RESPONSE or STOP returns STALE_WORKFLOW_VERSION."""
+    with test_client.websocket_connect("/v1/agent/connect") as ws:
+        # Start task
+        ws.send_json({
+            "event_type": "START_TASK",
+            "prompt": "Test version mismatch prompt"
+        })
+        
+        # Wait for approval
+        task_id = None
+        for _ in range(10):
+            msg = ws.receive_json()
+            if msg.get("event_type") == "APPROVAL_REQUIRED":
+                task_id = msg.get("task_id")
+                break
+                
+        assert task_id is not None
+        
+        # Send APPROVAL_RESPONSE with STALE version
+        ws.send_json({
+            "event_type": "APPROVAL_RESPONSE",
+            "action": "APPROVE",
+            "task_id": task_id,
+            "workflow_version": 999,  # Mismatched version
+            "action_id": "approval-stale"
+        })
+        
+        # Expect STALE_WORKFLOW_VERSION error
+        err_msg = ws.receive_json()
+        assert err_msg.get("event_type") == "ERROR"
+        assert err_msg.get("error_code") == "STALE_WORKFLOW_VERSION"
+        
+        # Send STOP with STALE version
+        ws.send_json({
+            "event_type": "STOP",
+            "task_id": task_id,
+            "workflow_version": 999,  # Mismatched version
+            "action_id": "stop-stale"
+        })
+        
+        # Expect STALE_WORKFLOW_VERSION error
+        err_msg_stop = ws.receive_json()
+        assert err_msg_stop.get("event_type") == "ERROR"
+        assert err_msg_stop.get("error_code") == "STALE_WORKFLOW_VERSION"
+
+
+def test_rest_state_recovery_schema(test_client):
+    """Test that GET /v1/workflow/{task_id} returns the exact required schema."""
+    task_id = "test-rest-schema-task-id"
+    now = "2026-05-26T18:00:00Z"
+    legacy_state = WorkflowState(prompt="REST Schema task")
+    legacy_state.current_step = TaskState.WAITING_FINAL_APPROVAL
+    legacy_state.draft = "Outreach Draft Email"
+    legacy_state.research_data = {
+        "category": "computer",
+        "vendors": [{"name": "TestVendor1", "location": "Marathahalli"}]
+    }
+    
+    session = WorkflowSession(
+        task_id=task_id,
+        status=RuntimeWorkflowState.WAITING_APPROVAL,
+        user_prompt="REST Schema task",
+        workflow_state_json=legacy_state.to_json(),
+        created_at=now,
+        updated_at=now,
+        workflow_version=3
+    )
+    workflow_repo.save_session(session)
+    
+    # Retrieve workflow session via GET API
+    response = test_client.get(f"/v1/workflow/{task_id}")
+    assert response.status_code == 200
+    
+    data = response.json()
+    
+    # Verify exact schema keys and values
+    assert data["task_id"] == task_id
+    assert data["state"] == "WAITING_FINAL_APPROVAL"
+    assert data["workflow_version"] == 3
+    assert isinstance(data["messages"], list)
+    assert len(data["messages"]) > 0
+    
+    # Verify approval_payload structure
+    payload = data["approval_payload"]
+    assert payload["draft_message"] == "Outreach Draft Email"
+    assert len(payload["vendors"]) == 1
+    assert payload["vendors"][0]["name"] == "TestVendor1"

@@ -518,5 +518,18 @@
     "delivery_days": 1,
     "location": "Richmond Town",
     "metadata": {"description": "Quality paper cutters, heavy-duty metal staplers, steel binder clips, and general desk stationery."}
+  },
+  {
+    "vendor_name": "Chickpet Hardware & Plumbing Supplies",
+    "category": "computer",
+    "items": [
+      {"name": "Premium Tap Repair Kit", "price": 450},
+      {"name": "Water Valve Replacement Set", "price": 850},
+      {"name": "Leak Sealant Tape", "price": 150}
+    ],
+    "rating": 4.6,
+    "delivery_days": 1,
+    "location": "Chickpet",
+    "metadata": {"description": "Traditional hardware and plumbing shop specializing in taps, pipe repairs, and home maintenance tools."}
   }
 ]

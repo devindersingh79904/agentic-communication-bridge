@@ -300,12 +300,39 @@ async def generate_execution_result(prompt: str, improved_draft: Optional[str], 
 # ---------------------------------------------------------------------------
 
 
+def _run_outreach_safety_checks(draft: str, selected_vendor: Optional[dict]) -> tuple[bool, list[str]]:
+    """
+    Runs programmatic checks on the outreach draft for safety and correctness.
+    """
+    issues = []
+    if not draft or not draft.strip():
+        issues.append("Empty draft generated.")
+        return False, issues
+        
+    draft_lower = draft.lower()
+    
+    # 1. Missing vendor name / placeholders check
+    placeholders = ["[vendor", "[recipient", "[first name", "[last name", "[contact name", "[company name", "<company name>", "<vendor name>"]
+    for ph in placeholders:
+        if ph in draft_lower:
+            issues.append(f"Found placeholder text: '{ph}'")
+            
+    # 2. Aggressive tone check
+    aggressive_words = ["must immediately", "pay now", "or else", "demand", "warn you", "failure to comply", "force us"]
+    for word in aggressive_words:
+        if word in draft_lower:
+            issues.append(f"Detected aggressive language: '{word}'")
+            
+    return len(issues) == 0, issues
+
+
 async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_vendor: Optional[dict] = None, user_feedback: Optional[str] = None, memory_context: Optional[str] = None) -> str:
     """
     Generates a professional and concise vendor outreach message using the user's
     task prompt, analysis summary, and optional user feedback for context.
     User feedback guides tone and content (e.g., "make it more formal", "include pricing").
     Memory context enforces critical constraints (e.g., vendor selection must not be overridden).
+    Returns the outreach email draft.
     """
     logger.info("Draft generation started (provider=%s, model=%s)", config.AGENT_PROVIDER, _get_model())
 
@@ -341,13 +368,20 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
         f"{config.DEFAULT_COMPANY_NAME}"
     )
 
-    # Build system prompt with memory context constraints
+    # Build system prompt asking for structured JSON output
     system_prompt = (
         "You are a professional procurement assistant. Write a concise, professional vendor outreach email. "
-        "Address the email directly to the vendor company by name (e.g., 'Dear Silicon Valley Hardware Team,'). "
+        "Address the email directly to the vendor company by name (e.g., 'Dear TechNova Systems Team,'). "
         "NEVER use placeholder text such as [Recipient's Last Name], [First Name], [Contact Name], "
-        "[Vendor Name], or any bracket placeholders. "
-        "If no specific contact person is known, address the vendor's team directly using the company name."
+        "[Vendor Name], or any bracket placeholders.\n\n"
+        "Return a JSON object of this structure:\n"
+        "{\n"
+        '  "draft": "email text...",\n'
+        '  "issues_found": ["Tone was too pushy"],\n'
+        '  "improvements_made": ["Made it more professional"],\n'
+        '  "confidence": 0.87\n'
+        "}\n"
+        "Return ONLY the raw JSON object. Do not include markdown formatting or explanation."
     )
     if memory_context:
         system_prompt = f"{system_prompt}\n\n{memory_context}"
@@ -367,25 +401,56 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
                 }
             ],
             temperature=config.OPENAI_TEMPERATURE,
-            max_tokens=300
+            max_tokens=500
         )
     except Exception as e:
         logger.exception("LLM request failed during draft generation (provider=%s)", config.AGENT_PROVIDER)
         raise
 
     _log_usage("generate_outreach_draft", response)
-    draft = response.choices[0].message.content.strip()
+    raw_response = response.choices[0].message.content.strip()
 
-    # Validate LLM output
-    if not draft:
+    # Parse structured output JSON
+    email_draft = ""
+    try:
+        json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+        if json_match:
+            raw_json = json_match.group(0)
+            data = json.loads(raw_json)
+            email_draft = data.get("draft", "").strip()
+            issues_found = data.get("issues_found", [])
+            improvements_made = data.get("improvements_made", [])
+            confidence = data.get("confidence", 0.9)
+            logger.info("Structured LLM Output - Issues: %s, Improvements: %s, Confidence: %s", issues_found, improvements_made, confidence)
+        else:
+            email_draft = raw_response
+    except Exception as exc:
+        logger.warning("Failed to parse structured LLM JSON: %s. Falling back to raw text.", exc)
+        email_draft = raw_response
+
+    # Validate output and run safety checks
+    if not email_draft:
         logger.warning("LLM returned empty draft output")
         raise ValueError("Empty draft generated by LLM")
 
+    # Safety checks
+    passed, safety_issues = _run_outreach_safety_checks(email_draft, selected_vendor)
+    if not passed:
+        logger.warning("AI Safety check flagged issues: %s", safety_issues)
+        # Automatic healing of placeholders
+        for ph in ["[Vendor Name]", "[Recipient's Last Name]", "[Recipient's Name]", "[Contact Name]", "[First Name]", "[Last Name]"]:
+            if ph in email_draft:
+                replace_name = (selected_vendor.get("vendor_name") or selected_vendor.get("name") or "Vendor Team") if selected_vendor else "Vendor Team"
+                email_draft = email_draft.replace(ph, replace_name)
+
+        if not email_draft.strip():
+            email_draft = f"Dear Team,\n\nWe are interested in discussing procurement opportunities for your services. Please let us know your availability.\n\nBest regards,\n{config.DEFAULT_USER_NAME}\n{config.DEFAULT_COMPANY_NAME}"
+
     # Defensive truncation
-    draft = draft[:MAX_OUTPUT_LENGTH]
+    email_draft = email_draft[:MAX_OUTPUT_LENGTH]
 
     logger.info("Draft generation completed")
-    return draft
+    return email_draft
 
 
 async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Optional[str] = None) -> str:

@@ -339,6 +339,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     if (socket && socket.readyState === WebSocket.OPEN) {
       const { workflowVersion } = get();
+      const actionId = Math.random().toString(36).slice(2, 11);
       socket.send(
         JSON.stringify({
           event_type: CLIENT_EVENTS.APPROVAL_RESPONSE,
@@ -348,6 +349,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           correlation_id: correlationId,
           selected_vendors: selectedVendors || undefined,
           workflow_version: workflowVersion,
+          action_id: actionId,
         })
       );
     }
@@ -356,29 +358,31 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   sendStop: () => {
     const { socket, taskId, correlationId, workflowVersion } = get();
     
-    // Immediate optimistic cleanup
     set({
-      taskState: 'CANCELLED',
       cancellationReason: 'user',
       isAwaitingApproval: false,
       isRegenerating: false,
       timeoutCountdown: null,
     });
 
-    if (taskId) {
-      get().updateHistoryItem(taskId, { status: 'CANCELLED' });
-    }
-
     if (socket && socket.readyState === WebSocket.OPEN) {
+      const actionId = Math.random().toString(36).slice(2, 11);
       socket.send(
         JSON.stringify({
           event_type: CLIENT_EVENTS.STOP,
           task_id: taskId,
           correlation_id: correlationId,
           workflow_version: workflowVersion,
+          action_id: actionId,
         })
       );
-      socket.close();
+    } else {
+      set({
+        taskState: 'CANCELLED',
+      });
+      if (taskId) {
+        get().updateHistoryItem(taskId, { status: 'CANCELLED' });
+      }
     }
   },
 

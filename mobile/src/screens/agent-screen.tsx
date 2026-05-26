@@ -393,6 +393,24 @@ export const AgentScreen = () => {
         </View>
       </View>
 
+      {/* Reconnect / Resume Banner */}
+      {connectionStatus === 'connecting' && taskId && (
+        <View style={styles.reconnectBanner}>
+          <Text style={styles.reconnectBannerText}>
+            ⚡ Reconnecting. Restoring workflow state: {taskState.replace(/_/g, ' ')}
+          </Text>
+        </View>
+      )}
+      {connectionStatus === 'connected' && taskId && [
+        'WAITING_VENDOR_SELECTION', 'WAITING_FINAL_APPROVAL', 'RUNNING'
+      ].includes(taskState) && (
+        <View style={[styles.reconnectBanner, { backgroundColor: '#059669' }]}>
+          <Text style={styles.reconnectBannerText}>
+            ✅ Reconnected. Restored workflow state: {taskState.replace(/_/g, ' ')}
+          </Text>
+        </View>
+      )}
+
       {/* Stepper */}
       {taskState !== 'IDLE' && (
         <View style={styles.stepperContainer}>
@@ -837,6 +855,18 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: '#0F172A',
+  },
+  reconnectBanner: {
+    backgroundColor: '#D97706',
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reconnectBannerText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
   header: {
     flexDirection: 'row',
