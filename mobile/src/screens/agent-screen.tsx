@@ -63,6 +63,17 @@ const formatVendorItems = (vendor: VendorResult) => {
   return null;
 };
 
+const getVendorSourceLabel = (vendor: VendorResult) => {
+  const source = String(vendor.source_type || vendor.source || '').toLowerCase();
+  if (['db', 'internal', 'rag', 'sample_db', 'rag_fallback'].includes(source)) {
+    return 'SOURCE: DB / RAG';
+  }
+  if (['web', 'external', 'tavily'].includes(source) || vendor.source_url) {
+    return 'SOURCE: WEB';
+  }
+  return 'SOURCE: LLM';
+};
+
 export const AgentScreen = () => {
   const {
     hostUrl,
@@ -488,6 +499,7 @@ export const AgentScreen = () => {
                     const isSelected = selectedVendorKeys.includes(key);
                     const confidence = formatVendorConfidence(vendor);
                     const items = formatVendorItems(vendor);
+                    const sourceLabel = getVendorSourceLabel(vendor);
 
                     return (
                       <TouchableOpacity
@@ -501,7 +513,10 @@ export const AgentScreen = () => {
                       >
                         <View style={styles.vendorCardHeader}>
                           <View style={{ flex: 1 }}>
-                            <Text style={styles.vendorResultName}>{getVendorName(vendor)}</Text>
+                            <View style={styles.vendorNameRow}>
+                              <Text style={styles.vendorResultName}>{getVendorName(vendor)}</Text>
+                              <Text style={styles.vendorSourceBadge}>{sourceLabel}</Text>
+                            </View>
                             {!!vendor.category && (
                               <Text style={styles.vendorResultCategory}>{vendor.category}</Text>
                             )}
@@ -1152,6 +1167,12 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: 8,
   },
+  vendorNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
   vendorResultName: {
     color: '#F8FAFC',
     fontSize: 12,
@@ -1224,6 +1245,17 @@ const styles = StyleSheet.create({
   vendorMetaText: {
     color: '#CBD5E1',
     fontSize: 10,
+  },
+  vendorSourceBadge: {
+    backgroundColor: '#1D4ED8',
+    borderColor: '#93C5FD',
+    borderWidth: 1,
+    borderRadius: 4,
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
   },
   vendorItemsText: {
     color: '#94A3B8',

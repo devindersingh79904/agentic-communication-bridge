@@ -256,7 +256,7 @@ uv run pytest
 Current backend verification:
 
 ```text
-26 passed
+27 passed
 ```
 
 ---

@@ -1,8 +1,9 @@
 import logging
-import httpx
+import asyncio
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
+from ddgs import DDGS
 from pydantic import BaseModel, Field
-from app.core import config
 
 logger = logging.getLogger("app.tools.external_vendor_search")
 
@@ -106,16 +107,46 @@ EXTERNAL_MOCK_DATA = {
     ]
 }
 
+def web_search(query: str, max_results: int = 5) -> List[Dict]:
+    """
+    Free DuckDuckGo web search tool for agent.
+    No API key needed.
+    """
+    results = []
+
+    try:
+        with DDGS() as ddgs:
+            search_results = ddgs.text(
+                query=query,
+                max_results=max_results
+            )
+
+            for item in search_results:
+                results.append({
+                    "title": item.get("title"),
+                    "url": item.get("href"),
+                    "snippet": item.get("body")
+                })
+
+    except Exception as e:
+        return [{
+            "title": "Search failed",
+            "url": None,
+            "snippet": str(e)
+        }]
+
+    return results
+
 async def external_vendor_search_tool(
     query: str, 
     category: str,
-    city: str = "Bangalore",
-    locality: str = "Marathahalli",
-    pincode: str = "560037"
+    city: str = "",
+    locality: str = "",
+    pincode: str = ""
 ) -> Dict[str, Any]:
     """
     Optional web-search-based vendor discovery.
-    Integrates with Tavily if API key is provided, otherwise falls back to a realistic mock search.
+    Uses DuckDuckGo search and falls back to realistic mock search results if needed.
     """
     logger.info(f"Executing external vendor search for query: '{query}' in locality={locality}, city={city}, pincode={pincode}, category={category}")
     
@@ -127,42 +158,62 @@ async def external_vendor_search_tool(
         
     vendors = []
     
-    # Check Tavily Search Integration
-    if config.TAVILY_API_KEY:
-        logger.info("Tavily API key found. Querying Tavily...")
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    "https://api.tavily.com/search",
-                    json={
-                        "api_key": config.TAVILY_API_KEY,
-                        "query": f"{query} vendor in {locality} {city} {pincode} {category}",
-                        "search_depth": "basic",
-                        "include_answer": False
-                    }
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    results = data.get("results", [])
-                    # Parse Tavily results into vendor formats
-                    for i, r in enumerate(results[:2]):
-                        vendors.append({
-                            "vendor_name": r.get("title", f"Web Vendor {i+1}"),
-                            "category": cat_normalized,
-                            "items": [{"name": "Standard Services", "price": 0}],
-                            "rating": 4.5,
-                            "delivery_days": 3,
-                            "location": "Online Search Result",
-                            "source_url": r.get("url", "https://tavily.com"),
-                            "metadata": {"description": r.get("content", "Found via web search.")}
-                        })
-        except Exception as e:
-            logger.error(f"Tavily search request failed: {e}. Falling back to mock search.")
+    # search_query = (
+    #     f"{category} suppliers vendors {locality} {city} {pincode}"
+    #     f"{query} -wikipedia -dictionary -justdial -sulekha -indiamart"
+    # ).strip()
+
+
+    #use this search_query = f'{category} shops near {locality} {city} {pincode} -justdial -sulekha -indiamart -wikipedia'
+
+    search_query = f'{query} {category} shops in  {locality} {city} {pincode}  -justdial -sulekha -indiamart -wikipedia'
+    
+    try:
+        logger.info("Querying DuckDuckGo for external vendor search: %r", search_query)
+        results = await asyncio.to_thread(web_search, search_query, 8)
+        if results and results[0].get("title") == "Search failed":
+            logger.error("DuckDuckGo search failed: %s", results[0].get("snippet"))
+            results = []
+
+        blocked_domains = {"wikipedia.org", "wiktionary.org", "britannica.com"}
+        filtered_results = []
+        #print the results 
+        logger.info("DuckDuckGo search results: %r", results)
+        for result in results:
+            url = result.get("url") or ""
+            domain = urlparse(url).netloc.lower().removeprefix("www.")
+            if any(domain.endswith(blocked) for blocked in blocked_domains):
+                continue
+            filtered_results.append(result)
+            if len(filtered_results) == 2:
+                break
+
+        for i, result in enumerate(filtered_results):
+            title = result.get("title") or f"Web Vendor {i + 1}"
+            url = result.get("url") or "https://duckduckgo.com"
+            description = result.get("snippet") or "Found via DuckDuckGo search."
+            vendors.append({
+                "vendor_name": title,
+                "category": cat_normalized,
+                "items": [{"name": "Standard Services", "price": 0}],
+                "rating": 4.5,
+                "delivery_days": 3,
+                "location": f"{locality}, {city}" if locality and city else "Web Search Result",
+                "source_type": "web",
+                "source": "duckduckgo",
+                "source_url": url,
+                "metadata": {"description": description}
+            })
+    except Exception as e:
+        logger.error(f"DuckDuckGo search failed: {e}. Falling back to mock search.")
             
-    # Mock fallback if Tavily not used or failed
+    # Mock fallback if DuckDuckGo fails or returns no usable vendors.
     if not vendors:
         logger.info("Using high-quality mock external search results.")
-        vendors = EXTERNAL_MOCK_DATA.get(cat_normalized, EXTERNAL_MOCK_DATA["computer"])
+        vendors = [
+            {**vendor, "source_type": "web", "source": "mock_web"}
+            for vendor in EXTERNAL_MOCK_DATA.get(cat_normalized, EXTERNAL_MOCK_DATA["computer"])
+        ]
         
     output = ExternalSearchOutput(vendors=vendors, confidence=0.85)
     return output.model_dump()

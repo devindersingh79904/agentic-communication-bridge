@@ -148,7 +148,9 @@ class ChromaVectorStore(BaseVectorStore):
                     "delivery_days": int(meta["delivery_days"]),
                     "items": json.loads(meta["items"]),
                     "metadata": json.loads(meta["metadata"]),
-                    "confidence": float(similarity)
+                    "confidence": float(similarity),
+                    "source_type": "db",
+                    "source": "rag"
                 })
         return results
 

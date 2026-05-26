@@ -29,14 +29,24 @@ class AgentPlanner:
 
         normalized_category = (category or "computer").lower()
         candidates = [
-            {**vendor, "confidence": vendor.get("confidence", 0.5)}
+            {
+                **vendor,
+                "confidence": vendor.get("confidence", 0.5),
+                "source_type": "db",
+                "source": "sample_db",
+            }
             for vendor in SAMPLE_VENDORS
             if vendor.get("category", "").lower() == normalized_category
         ]
 
         if not candidates and normalized_category != "computer":
             candidates = [
-                {**vendor, "confidence": vendor.get("confidence", 0.5)}
+                {
+                    **vendor,
+                    "confidence": vendor.get("confidence", 0.5),
+                    "source_type": "db",
+                    "source": "sample_db",
+                }
                 for vendor in SAMPLE_VENDORS
                 if vendor.get("category", "").lower() == "computer"
             ]

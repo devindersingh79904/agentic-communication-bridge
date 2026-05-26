@@ -43,5 +43,7 @@ async def retrieve_vendors(query: str, category: Optional[str] = None, top_k: in
                 continue
             v_copy = dict(v)
             v_copy["confidence"] = 0.5  # Neutral default confidence
+            v_copy["source_type"] = "db"
+            v_copy["source"] = "rag_fallback"
             fallback_results.append(v_copy)
         return fallback_results[:top_k]

@@ -1,6 +1,7 @@
 import asyncio
 import time
 import logging
+import re
 from typing import Dict, Any, Optional, List
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
@@ -36,6 +37,25 @@ _tasks_lock = asyncio.Lock()
 _processed_actions = set()
 
 class WorkflowRuntime:
+    _KNOWN_VENDOR_PATTERNS = [
+        re.compile(
+            r"\b(?:already\s+)?(?:selected|chosen|approved|picked)\s+(?:the\s+)?vendor\s*:?\s+(?P<vendor>.+?)(?:\.|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:i\s+)?(?:already\s+)?know\s+(?:a\s+)?vendor\s+(?P<vendor>.+?)(?:\.|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bvendor\s*:\s*(?P<vendor>.+?)(?:\.|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bvendor\s+is\s+(?P<vendor>.+?)(?:\.|$)",
+            re.IGNORECASE,
+        ),
+    ]
+
     def is_action_processed(self, action_id: str) -> bool:
         """Checks if an action_id has already been processed."""
         return action_id in _processed_actions
@@ -43,6 +63,109 @@ class WorkflowRuntime:
     def mark_action_processed(self, action_id: str) -> None:
         """Marks an action_id as processed to enforce idempotency."""
         _processed_actions.add(action_id)
+
+    def _extract_known_vendor_from_prompt(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """
+        Extracts an explicitly provided vendor from prompts such as:
+        "I already selected the vendor: Devinder Singh Panesar in Marathahalli, Bangalore."
+        """
+        normalized_prompt = " ".join((prompt or "").split())
+        if not normalized_prompt:
+            return None
+
+        for pattern in self._KNOWN_VENDOR_PATTERNS:
+            match = pattern.search(normalized_prompt)
+            if not match:
+                continue
+
+            raw_vendor = match.group("vendor").strip(" :-")
+            raw_vendor = re.split(
+                r"\b(?:do\s+not|don't|dont|skip|only|then|please|for\s+buying|for\s+procurement|draft|prepare)\b",
+                raw_vendor,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" ,-:")
+            if not raw_vendor:
+                continue
+
+            location = None
+            vendor_name = raw_vendor
+            location_match = re.search(r"\s+(?:from|in|at|near)\s+(.+)$", raw_vendor, re.IGNORECASE)
+            if location_match:
+                vendor_name = raw_vendor[:location_match.start()].strip(" ,-:")
+                location = location_match.group(1).strip(" ,-:")
+
+            vendor_name = re.sub(r"^(?:the\s+)?", "", vendor_name, flags=re.IGNORECASE).strip()
+            if len(vendor_name) < 2:
+                continue
+
+            vendor: Dict[str, Any] = {
+                "vendor_name": vendor_name,
+                "source": "user_prompt",
+            }
+            if location:
+                vendor["location"] = location
+
+            return vendor
+
+        return None
+
+    def _seed_known_vendor(self, state: WorkflowState) -> bool:
+        if state.selected_vendor:
+            return False
+
+        vendor = self._extract_known_vendor_from_prompt(state.prompt)
+        if not vendor:
+            return False
+
+        vendor_name = vendor.get("vendor_name") or vendor.get("name")
+        state.selected_vendor = vendor
+        state.selected_vendors = [vendor]
+        state.vendor_selection_approved = True
+        state.analysis_summary = (
+            f"User provided {vendor_name} as the selected vendor. "
+            "Vendor search and pricing comparison were intentionally skipped."
+        )
+        state.constraints["known_vendor_from_prompt"] = True
+        logger.info("Seeded known vendor from prompt: %s", vendor_name)
+        return True
+
+    def _ensure_final_outreach_gate_step(self, plan: ExecutionPlan) -> ExecutionPlan:
+        """
+        Keeps LLM-generated outreach plans from bypassing the final human approval gate.
+        """
+        tools = [step.tool for step in plan.plan]
+        if "draft_outreach" not in tools or "execute_outreach" in tools:
+            return plan
+
+        dependency_step = next(
+            (step for step in reversed(plan.plan) if step.tool == "self_reflection"),
+            None,
+        ) or next(
+            (step for step in reversed(plan.plan) if step.tool == "draft_outreach"),
+            None,
+        )
+        if not dependency_step:
+            return plan
+
+        numeric_ids = [
+            int(step.step_id)
+            for step in plan.plan
+            if str(step.step_id).isdigit()
+        ]
+        next_step_id = str((max(numeric_ids) + 1) if numeric_ids else len(plan.plan) + 1)
+        plan.plan.append(
+            PlanStep(
+                step_id=next_step_id,
+                tool="execute_outreach",
+                reason="Require final human approval before completing outreach.",
+                depends_on=[dependency_step.step_id],
+                status="pending",
+            )
+        )
+        logger.info("Appended execute_outreach step to preserve final approval gate.")
+        return plan
+
     async def get_or_create_session(self, task_id: str, prompt: str) -> WorkflowSession:
         """
         Loads an existing session from DB or starts a fresh session context.
@@ -53,6 +176,7 @@ class WorkflowRuntime:
             now = utc_now_iso()
             # Initialize backward compatible legacy WorkflowState
             legacy_state = WorkflowState(prompt=prompt)
+            self._seed_known_vendor(legacy_state)
             session = WorkflowSession(
                 task_id=task_id,
                 status=RuntimeWorkflowState.CREATED,
@@ -327,6 +451,7 @@ class WorkflowRuntime:
                     plan = planner_agent._get_fallback_plan()
                 else:
                     plan = await planner_agent.generate_plan(prompt)
+                plan = self._ensure_final_outreach_gate_step(plan)
                 session.execution_plan = plan
                 workflow_repo.save_session(session)
                 
@@ -377,6 +502,7 @@ class WorkflowRuntime:
                         
                         # Dynamically adjust plan graph
                         new_plan = await planner_agent.replan(session, feedback)
+                        new_plan = self._ensure_final_outreach_gate_step(new_plan)
                         # Reset remaining steps to pending
                         for ns in new_plan.plan:
                             ns.status = "pending"

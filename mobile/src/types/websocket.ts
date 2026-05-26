@@ -43,7 +43,9 @@ export interface VendorResult {
   confidence_score?: number;
   confidence?: number;
   score?: number;
+  source?: string;
   source_type?: 'internal' | 'external' | string;
+  source_url?: string;
   catalog?: Record<string, string | number>;
   items?: Array<{ name?: string; price?: string | number }> | Record<string, string | number>;
   catalog_items?: any;

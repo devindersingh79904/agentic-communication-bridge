@@ -43,9 +43,9 @@ AGENT_STEP_DELAY_SECONDS: int = int(os.getenv("AGENT_STEP_DELAY_SECONDS", "2"))
 MAX_REGENERATION_ATTEMPTS: int = int(os.getenv("MAX_REGENERATION_ATTEMPTS", "3"))
 
 # Localized Procurement Context Configs
-DEFAULT_CITY: str = os.getenv("DEFAULT_CITY", "Bangalore").strip()
-DEFAULT_LOCALITY: str = os.getenv("DEFAULT_LOCALITY", "Marathahalli").strip()
-DEFAULT_PINCODE: str = os.getenv("DEFAULT_PINCODE", "560037").strip()
+DEFAULT_CITY: str = os.getenv("DEFAULT_CITY", "").strip()
+DEFAULT_LOCALITY: str = os.getenv("DEFAULT_LOCALITY", "").strip()
+DEFAULT_PINCODE: str = os.getenv("DEFAULT_PINCODE", "").strip()
 
 DEFAULT_USER_NAME: str = os.getenv("DEFAULT_USER_NAME", "Devinder Singh").strip()
 DEFAULT_COMPANY_NAME: str = os.getenv("DEFAULT_COMPANY_NAME", "DSP Technologies").strip()
