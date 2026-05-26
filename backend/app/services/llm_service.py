@@ -256,9 +256,10 @@ async def generate_analysis(research_data: dict, prompt: str, feedback: Optional
         # Fallback: choose first vendor from research data
         vendors = research_data.get("vendors", [])
         selected = vendors[0] if vendors else None
+        vendor_name = (selected.get('vendor_name') or selected.get('name', 'default vendor')) if selected else 'default vendor'
         summary = (
             f"Analyzed vendor data for task: {prompt[:100]}... "
-            f"Selected {selected['name'] if selected else 'default vendor'} "
+            f"Selected {vendor_name} "
             f"based on availability and fit."
         )
         return summary, selected
@@ -299,10 +300,12 @@ async def generate_execution_result(prompt: str, improved_draft: Optional[str], 
 # ---------------------------------------------------------------------------
 
 
-async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_vendor: Optional[dict] = None) -> str:
+async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_vendor: Optional[dict] = None, user_feedback: Optional[str] = None, memory_context: Optional[str] = None) -> str:
     """
     Generates a professional and concise vendor outreach message using the user's
-    task prompt and analysis summary for context.
+    task prompt, analysis summary, and optional user feedback for context.
+    User feedback guides tone and content (e.g., "make it more formal", "include pricing").
+    Memory context enforces critical constraints (e.g., vendor selection must not be overridden).
     """
     logger.info("Draft generation started (provider=%s, model=%s)", config.AGENT_PROVIDER, _get_model())
 
@@ -315,21 +318,39 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
 
     vendor_context = ""
     if selected_vendor:
+        vendor_name = selected_vendor.get('vendor_name') or selected_vendor.get('name', 'Vendor')
+        vendor_location = selected_vendor.get('location', 'Unknown Location')
         vendor_context = (
             f"Preferred vendor:\n"
-            f"{selected_vendor['name']} located in {selected_vendor['location']}"
+            f"{vendor_name} located in {vendor_location}"
         )
+
+    feedback_context = ""
+    if user_feedback and user_feedback.strip():
+        feedback_context = f"User preferences/feedback:\n{user_feedback}\n\n"
 
     user_content = (
         f"{location_context}\n\n"
         f"{vendor_context}\n\n"
+        f"{feedback_context}"
         f"Task: {prompt}\n\n"
         f"Analysis: {analysis_summary}\n\n"
-        f"Generate a concise, realistic, professional vendor outreach email.\n\n"
+        f"Generate a concise, realistic, professional vendor outreach email incorporating the user's preferences.\n\n"
         f"Sign the message as:\n"
         f"{config.DEFAULT_USER_NAME}\n"
         f"{config.DEFAULT_COMPANY_NAME}"
     )
+
+    # Build system prompt with memory context constraints
+    system_prompt = (
+        "You are a professional procurement assistant. Write a concise, professional vendor outreach email. "
+        "Address the email directly to the vendor company by name (e.g., 'Dear Silicon Valley Hardware Team,'). "
+        "NEVER use placeholder text such as [Recipient's Last Name], [First Name], [Contact Name], "
+        "[Vendor Name], or any bracket placeholders. "
+        "If no specific contact person is known, address the vendor's team directly using the company name."
+    )
+    if memory_context:
+        system_prompt = f"{system_prompt}\n\n{memory_context}"
 
     _log_llm_used("generate_outreach_draft")
     try:
@@ -338,7 +359,7 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a professional procurement assistant. Generate extremely concise vendor outreach messages."
+                    "content": system_prompt
                 },
                 {
                     "role": "user",
@@ -346,7 +367,7 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
                 }
             ],
             temperature=config.OPENAI_TEMPERATURE,
-            max_tokens=150
+            max_tokens=300
         )
     except Exception as e:
         logger.exception("LLM request failed during draft generation (provider=%s)", config.AGENT_PROVIDER)
@@ -432,7 +453,11 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
                         "You are a professional email writer. "
                         "Return ONLY the final rewritten outreach email. "
                         "Do NOT include any evaluation, commentary, markdown headings, "
-                        "bullet points, or analysis text."
+                        "bullet points, or analysis text. "
+                        "NEVER replace specific vendor or company names with placeholders like "
+                        "[Recipient's Last Name], [First Name], [Vendor Name], or any bracket text. "
+                        "If the original draft addresses a specific company, preserve that company name. "
+                        "Address the email to the vendor company team directly (e.g., 'Dear <CompanyName> Team,')."
                     )
                 },
                 {
@@ -441,7 +466,7 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
                 }
             ],
             temperature=config.REFLECTION_TEMPERATURE,
-            max_tokens=150
+            max_tokens=300
         )
     except Exception:
         logger.exception("LLM request failed during self-reflection pass 2 (provider=%s)", config.AGENT_PROVIDER)

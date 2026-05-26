@@ -156,6 +156,17 @@ export const connectAgentWS = (prompt: string) => {
             store.setRejectionFeedback('');
             store.setError(null);
 
+            // Ensure vendor results are populated from approval data
+            if (approvalData.vendors && approvalData.vendors.length > 0) {
+              store.setVendorResults(approvalData.vendors);
+            }
+            if (approvalData.selected_vendor) {
+              store.setSelectedVendor(approvalData.selected_vendor);
+            }
+            if (approvalData.pricing_analysis) {
+              store.setPricingAnalysis(approvalData.pricing_analysis);
+            }
+
             // Set dynamic timeout countdown
             const timeoutSecs = approvalData.approval_timeout_seconds ?? 60;
             store.setTimeoutCountdown(timeoutSecs);
@@ -173,23 +184,35 @@ export const connectAgentWS = (prompt: string) => {
               });
             }, 1000);
 
+            const isFinalApproval = approvalData.task_state === 'WAITING_FINAL_APPROVAL';
             store.appendMessage({
               sender: 'system',
-              text: `📋 ${stepLabel} completed. Action required: authorize step to proceed.`,
+              text: isFinalApproval
+                ? `📧 Draft generated — review below and approve or reject with feedback.`
+                : `📋 ${stepLabel} completed. Action required: authorize step to proceed.`,
             });
 
-            store.appendMessage({
-              sender: 'agent',
-              text: approvalData.step_data ?? approvalData.draft_message,
-              agent_step: approvalData.agent_step,
-            });
+            if (isFinalApproval && (approvalData.draft_message || approvalData.step_data)) {
+              // Show the LLM-generated draft email in chat on every iteration
+              store.appendMessage({
+                sender: 'agent',
+                text: approvalData.draft_message ?? approvalData.step_data ?? '',
+                agent_step: 'DRAFTING_OUTREACH' as AgentStep,
+              });
+            } else if (!isFinalApproval) {
+              store.appendMessage({
+                sender: 'agent',
+                text: approvalData.step_data ?? approvalData.draft_message,
+                agent_step: approvalData.agent_step,
+              });
+            }
             break;
 
           case SERVER_EVENTS.TASK_COMPLETED:
             if (timerId) { clearInterval(timerId); timerId = null; }
             if (heartbeatTimerId) { clearInterval(heartbeatTimerId); heartbeatTimerId = null; }
             
-            store.updateTaskState('COMPLETED');
+            store.updateTaskState('SUCCESS');
             store.setCurrentAgentStep(null);
             store.setIsAwaitingApproval(false);
             store.setIsRegenerating(false);
@@ -198,11 +221,14 @@ export const connectAgentWS = (prompt: string) => {
             store.setCurrentStepData(null);
 
             const completedData = data as import('../types/websocket').TaskCompletedEvent;
+            if (completedData.final_response) {
+              store.setFinalEmail(completedData.final_response);
+            }
             
             // Add final outcome to history item
             if (store.taskId) {
               store.updateHistoryItem(store.taskId, {
-                status: 'COMPLETED',
+                status: 'SUCCESS',
                 selected_vendor: store.selectedVendor ?? undefined,
                 final_response: completedData.final_response ?? store.draftMessage ?? undefined,
               });
@@ -314,9 +340,15 @@ export const connectAgentWS = (prompt: string) => {
       const isIntermediate = [
         'SCHEDULED',
         'RUNNING',
+        'SEARCHING_VENDORS',
         'EXTERNAL_SEARCHING',
+        'ANALYZING_PRICING',
+        'DRAFTING_OUTREACH',
+        'SELF_REFLECTION',
         'FAILED_RETRYING',
-        'WAITING_FINAL_APPROVAL'
+        'WAITING_VENDOR_SELECTION',
+        'WAITING_PRICE_APPROVAL',
+        'WAITING_FINAL_APPROVAL',
       ].includes(stateBeforeClose);
 
       if (isIntermediate && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {

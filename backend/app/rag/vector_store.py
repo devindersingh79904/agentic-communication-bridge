@@ -7,169 +7,17 @@ from app.rag.embedding_service import get_embedding
 
 logger = logging.getLogger("app.rag.vector_store")
 
-# Define the 12 sample vendors (3 for each category: computer, transport, food, stationery)
-SAMPLE_VENDORS = [
-    # Category: computer
-    {
-        "vendor_name": "TechWorld Computers",
-        "category": "computer",
-        "items": [
-            {"name": "MacBook Air M4", "price": 98000},
-            {"name": "Dell XPS 15", "price": 120000},
-            {"name": "Lenovo ThinkPad X1", "price": 110000}
-        ],
-        "rating": 4.6,
-        "delivery_days": 2,
-        "location": "Bangalore",
-        "metadata": {"description": "Premium laptops, high-performance office workstations, and developer systems."}
-    },
-    {
-        "vendor_name": "ByteEdge Systems",
-        "category": "computer",
-        "items": [
-            {"name": "Gaming Laptop RTX 4070", "price": 95000},
-            {"name": "Desktop PC Intel i7", "price": 85000},
-            {"name": "Monitor 4K", "price": 30000}
-        ],
-        "rating": 4.3,
-        "delivery_days": 3,
-        "location": "Whitefield",
-        "metadata": {"description": "Custom builds, gaming setups, and high-resolution creative monitors."}
-    },
-    {
-        "vendor_name": "NextGen PC Hub",
-        "category": "computer",
-        "items": [
-            {"name": "HP EliteBook", "price": 90000},
-            {"name": "Office Desktop", "price": 50000},
-            {"name": "Keyboard & Mouse Bundle", "price": 2500}
-        ],
-        "rating": 4.5,
-        "delivery_days": 1,
-        "location": "Bellandur",
-        "metadata": {"description": "Affordable corporate workstations, business laptops, and accessories."}
-    },
-    # Category: transport
-    {
-        "vendor_name": "SwiftRide Logistics",
-        "category": "transport",
-        "items": [
-            {"name": "City Delivery Truck Rental", "price": 5000},
-            {"name": "Courier Van Rental", "price": 3000},
-            {"name": "Cargo Bike Delivery Service", "price": 500}
-        ],
-        "rating": 4.8,
-        "delivery_days": 1,
-        "location": "Koramangala",
-        "metadata": {"description": "Intra-city transport, van rentals, and courier bike services."}
-    },
-    {
-        "vendor_name": "EcoTransit Wheels",
-        "category": "transport",
-        "items": [
-            {"name": "Electric Van Hire", "price": 4000},
-            {"name": "Bicycle Courier Service", "price": 400},
-            {"name": "Cargo EV Hire", "price": 3500}
-        ],
-        "rating": 4.4,
-        "delivery_days": 2,
-        "location": "Indiranagar",
-        "metadata": {"description": "Sustainable and eco-friendly transportation, electric vehicles, and bike messengers."}
-    },
-    {
-        "vendor_name": "Apex Heavy Movers",
-        "category": "transport",
-        "items": [
-            {"name": "10-Ton Truck Service", "price": 15000},
-            {"name": "Flatbed Trailer Hire", "price": 25000},
-            {"name": "Logistics Consulting", "price": 8000}
-        ],
-        "rating": 4.2,
-        "delivery_days": 4,
-        "location": "Peenya",
-        "metadata": {"description": "Heavy-duty logistics, freight movement, bulk shipping, and warehousing."}
-    },
-    # Category: food
-    {
-        "vendor_name": "Healthy Bites Catering",
-        "category": "food",
-        "items": [
-            {"name": "Corporate Lunch Buffet", "price": 300},
-            {"name": "Fruit Platter Bundle", "price": 1500},
-            {"name": "Organic Snack Box", "price": 120}
-        ],
-        "rating": 4.7,
-        "delivery_days": 1,
-        "location": "HSR Layout",
-        "metadata": {"description": "Nutritious corporate meals, events catering, and healthy organic office snacks."}
-    },
-    {
-        "vendor_name": "Saffron Flavors",
-        "category": "food",
-        "items": [
-            {"name": "Indian Deluxe Meal Combo", "price": 250},
-            {"name": "Biryani Party Pack", "price": 5000},
-            {"name": "Traditional Sweet Box", "price": 450}
-        ],
-        "rating": 4.5,
-        "delivery_days": 1,
-        "location": "Jayanagar",
-        "metadata": {"description": "Authentic Indian cuisine and high-volume catering for office celebrations."}
-    },
-    {
-        "vendor_name": "Express Quick Lunch",
-        "category": "food",
-        "items": [
-            {"name": "Office Sandwich Box", "price": 180},
-            {"name": "Coffee & Cookie Flask", "price": 800},
-            {"name": "Pastry Assortment", "price": 600}
-        ],
-        "rating": 4.1,
-        "delivery_days": 1,
-        "location": "Bellandur",
-        "metadata": {"description": "Quick office lunch deliveries, breakfast boxes, and beverages."}
-    },
-    # Category: stationery
-    {
-        "vendor_name": "OfficeMate Depot",
-        "category": "stationery",
-        "items": [
-            {"name": "A4 Printing Paper Carton", "price": 1500},
-            {"name": "Premium Notebook Set", "price": 600},
-            {"name": "Ergonomic Office Chair", "price": 8500}
-        ],
-        "rating": 4.6,
-        "delivery_days": 2,
-        "location": "Marathahalli",
-        "metadata": {"description": "Full-service office supplies, writing notebooks, and office furniture."}
-    },
-    {
-        "vendor_name": "Papercraft & Co",
-        "category": "stationery",
-        "items": [
-            {"name": "Recycled Notebook Pack", "price": 500},
-            {"name": "Eco-friendly Pens (10x)", "price": 150},
-            {"name": "Whiteboard Marker Set", "price": 200}
-        ],
-        "rating": 4.5,
-        "delivery_days": 2,
-        "location": "MG Road",
-        "metadata": {"description": "Eco-friendly stationery, notebooks, writing materials, and desktop tools."}
-    },
-    {
-        "vendor_name": "Bulk Stationery Hub",
-        "category": "stationery",
-        "items": [
-            {"name": "Magnetic Whiteboard", "price": 2500},
-            {"name": "Stapler & Punches Bulk", "price": 1200},
-            {"name": "A4 Paper Box", "price": 1400}
-        ],
-        "rating": 4.3,
-        "delivery_days": 3,
-        "location": "Chickpet",
-        "metadata": {"description": "Wholesale supplier of stationery items, whiteboards, and office accessories."}
-    }
-]
+# Load sample vendors from JSON
+RAG_DIR = os.path.dirname(os.path.abspath(__file__))
+SAMPLE_VENDORS_PATH = os.path.join(RAG_DIR, "sample_vendors.json")
+
+try:
+    with open(SAMPLE_VENDORS_PATH, "r") as f:
+        SAMPLE_VENDORS = json.load(f)
+except Exception as e:
+    logger.error(f"Failed to load sample vendors from {SAMPLE_VENDORS_PATH}: {e}")
+    SAMPLE_VENDORS = []
+
 
 def make_vendor_text(vendor: Dict[str, Any]) -> str:
     """Helper to convert vendor fields into a dense string for embedding."""
@@ -316,9 +164,15 @@ async def init_vector_store() -> BaseVectorStore:
         import chromadb
         logger.info(f"Initializing ChromaDB vector store at {config.CHROMA_PERSIST_PATH}")
         store = ChromaVectorStore(config.CHROMA_PERSIST_PATH)
-        # Seed if collection is empty
-        if store.collection.count() == 0:
-            logger.info("ChromaDB collection is empty. Seeding sample vendors...")
+        # Seed if collection is empty or contains the old sample set size (12)
+        current_count = store.collection.count()
+        if current_count == 0 or current_count == 12:
+            logger.info(f"ChromaDB collection contains {current_count} vendors. Re-seeding with updated 40 sample vendors...")
+            try:
+                store.client.delete_collection("procurement_vendors")
+            except Exception:
+                pass
+            store.collection = store.client.get_or_create_collection("procurement_vendors")
             await store.add_vendors(SAMPLE_VENDORS)
         _vector_store = store
     except ImportError:

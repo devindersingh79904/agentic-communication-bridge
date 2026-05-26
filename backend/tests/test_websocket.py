@@ -58,87 +58,88 @@ def speed_up_and_mock_tools():
     async def side_effect_decide(state):
         from app.core.enums import TaskState, ApprovalAction
         
-        if state.current_step in (TaskState.SCHEDULED, TaskState.RUNNING):
+        # 1. Vendor search phase
+        if not state.research_data:
             return {
                 "next_action": "vendor_search",
                 "reason": "Test search",
                 "parameters": {}
             }
             
-        if state.current_step == TaskState.SEARCHING_VENDORS:
+        # 2. Wait for vendor selection
+        if state.research_data and not state.selected_vendors:
+            if state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
+                state.approval_action = None
+                state.research_data = None # trigger re-search
+                return {
+                    "next_action": "vendor_search",
+                    "reason": "Retry search due to rejection",
+                    "parameters": {}
+                }
+            return {
+                "next_action": "wait_for_human",
+                "reason": "Test wait vendor",
+                "parameters": {"step": "vendor_selection"}
+            }
+            
+        # 3. Pricing analysis phase
+        if state.selected_vendors and not state.analysis_summary:
             return {
                 "next_action": "pricing_analysis",
                 "reason": "Test pricing",
                 "parameters": {}
             }
             
-        if state.current_step == TaskState.ANALYZING_PRICING:
-            return {
-                "next_action": "draft_outreach",
-                "reason": "Test drafting",
-                "parameters": {}
-            }
+        # 4. Wait for price approval
+        if state.analysis_summary and not state.draft:
+            if not hasattr(state, "mock_price_waiting"):
+                state.mock_price_waiting = False
+            if not state.mock_price_waiting:
+                state.mock_price_waiting = True
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Test wait pricing",
+                    "parameters": {"step": "price_approval"}
+                }
+            else:
+                return {
+                    "next_action": "draft_outreach",
+                    "reason": "Test drafting",
+                    "parameters": {}
+                }
             
-        if state.current_step == TaskState.DRAFTING_OUTREACH:
+        # 5. Draft and reflection phases
+        if state.draft and not state.improved_draft:
             return {
                 "next_action": "self_reflection",
                 "reason": "Test reflection",
                 "parameters": {}
             }
             
-        if state.current_step == TaskState.SELF_REFLECTION:
-            return {
-                "next_action": "wait_for_human",
-                "reason": "Test wait final",
-                "parameters": {"step": "final_approval"}
-            }
-            
-        if state.current_step == TaskState.WAITING_FINAL_APPROVAL:
-            if state.approval_action == ApprovalAction.APPROVE:
-                state.approval_action = None
-                return {
-                    "next_action": "execute_outreach",
-                    "reason": "Test execute",
-                    "parameters": {}
-                }
-            elif state.approval_action == ApprovalAction.REJECT:
-                feedback = state.rejection_feedback or ""
-                state.approval_action = None
-                state.rejection_feedback = None
-                
-                # Check feedback to trigger search or draft rewrite
-                if "expensive" in feedback.lower() or "too many" in feedback.lower():
-                    state.research_data = None
-                    state.analysis_summary = None
-                    state.selected_vendor = None
-                    state.draft = None
-                    state.improved_draft = None
-                    return {
-                        "next_action": "vendor_search",
-                        "reason": f"Retry search: {feedback}",
-                        "parameters": {}
-                    }
-                else:
-                    state.draft = None
-                    state.improved_draft = None
-                    return {
-                        "next_action": "draft_outreach",
-                        "reason": f"Retry draft: {feedback}",
-                        "parameters": {}
-                    }
-            else:
+        # 6. Wait for final approval
+        if state.improved_draft and not state.execution_result:
+            if not hasattr(state, "mock_final_waiting"):
+                state.mock_final_waiting = False
+            if not state.mock_final_waiting:
+                state.mock_final_waiting = True
                 return {
                     "next_action": "wait_for_human",
                     "reason": "Test wait final",
                     "parameters": {"step": "final_approval"}
                 }
-                
-        if state.current_step == TaskState.COMPLETED:
-            return {
-                "next_action": "complete",
-                "reason": "Test complete",
-                "parameters": {}
-            }
+            else:
+                return {
+                    "next_action": "execute_outreach",
+                    "reason": "Test execute",
+                    "parameters": {}
+                }
+            
+        # 7. Complete
+        return {
+            "next_action": "complete",
+            "reason": "Test complete",
+            "parameters": {}
+        }
     m_decide.side_effect = side_effect_decide
 
     with patch.object(config, "AGENT_STEP_DELAY_SECONDS", 0), \
@@ -159,31 +160,35 @@ def test_websocket_approval_flow(test_client):
             "prompt": "Find hardware suppliers"
         })
 
-        # 2. Receive status updates and approval required events (1 wait step now)
-        events = []
-        for _ in range(12):
-            msg = ws.receive_json()
-            events.append(msg)
-            if msg.get("event_type") == "APPROVAL_REQUIRED":
-                break
+        # 2. Receive status updates and approval required events (3 wait steps now)
+        # We approve each step and continue
+        for step_num in range(3):
+            events = []
+            for _ in range(5):
+                msg = ws.receive_json()
+                events.append(msg)
+                if msg.get("event_type") == "APPROVAL_REQUIRED":
+                    break
 
-        event_types = [e.get("event_type") for e in events]
-        assert "STATUS_UPDATE" in event_types
-        assert "APPROVAL_REQUIRED" in event_types
+            event_types = [e.get("event_type") for e in events]
+            assert "STATUS_UPDATE" in event_types
+            assert "APPROVAL_REQUIRED" in event_types
 
-        app_req = events[-1]
-        assert app_req["draft_message"]  # Non-empty
+            app_req = events[-1]
+            assert app_req["draft_message"]  # Non-empty
 
-        # Verify task is active in registry
-        task_id = app_req["task_id"]
-        assert task_id in active_tasks
+            # Verify task is active in registry
+            task_id = app_req["task_id"]
+            assert task_id in active_tasks
 
-        # Send APPROVE
-        payload = {
-            "event_type": "APPROVAL_RESPONSE",
-            "action": "APPROVE"
-        }
-        ws.send_json(payload)
+            # Send APPROVE with selected vendors list for vendor selection step
+            payload = {
+                "event_type": "APPROVAL_RESPONSE",
+                "action": "APPROVE"
+            }
+            if step_num == 0:
+                payload["selected_vendors"] = [{"name": "TestVendor", "location": "TestLocation"}]
+            ws.send_json(payload)
 
         # 3. Receive final success event
         events_after = []
@@ -209,7 +214,7 @@ def test_websocket_disconnect_cleanup(test_client):
         })
 
         # Wait for approval required to ensure task is fully registered
-        for _ in range(15):
+        for _ in range(5):
             msg = ws.receive_json()
             if msg.get("event_type") == "APPROVAL_REQUIRED":
                 task_id = msg.get("task_id")

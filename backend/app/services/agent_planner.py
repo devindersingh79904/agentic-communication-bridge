@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, Any, Optional
+from datetime import datetime
 from app.models.workflow_state import WorkflowState
 from app.core.enums import TaskState
 from app.services.llm_service import _llm_call
@@ -12,6 +13,78 @@ from app.tools.reflection_tool import reflection_tool
 logger = logging.getLogger("app.services.agent_planner")
 
 class AgentPlanner:
+    async def extract_selected_vendor_semantic(self, feedback: str, available_vendors: list) -> Optional[Dict[str, Any]]:
+        """
+        Uses LLM to semantically understand which vendor the user wants from their feedback.
+        Handles natural language like "proceed with", "use", "go with", "prefer", etc.
+        Returns the selected vendor object or None if no vendor mentioned.
+        """
+        if not feedback or not available_vendors:
+            return None
+
+        vendor_list_str = "\n".join([f"- {v.get('vendor_name') or v.get('name')}" for v in available_vendors])
+
+        system_prompt = (
+            "You are a semantic understanding assistant. Given user feedback and a list of vendors, "
+            "determine which vendor (if any) the user wants to select.\n\n"
+            "The user may say things like:\n"
+            '- "proceed with X vendor"\n'
+            '- "use Y company"\n'
+            '- "prefer Z"\n'
+            '- "go with X"\n'
+            '- etc.\n\n'
+            "If the user clearly indicates a vendor preference, respond with ONLY the exact vendor name from the list.\n"
+            "If no vendor is mentioned or preference is unclear, respond with NONE."
+        )
+
+        user_content = (
+            f"Available vendors:\n{vendor_list_str}\n\n"
+            f"User feedback: {feedback}\n\n"
+            f"Which vendor does the user want? Respond with the exact vendor name or NONE."
+        )
+
+        try:
+            response = await _llm_call(
+                "extract_vendor_semantic",
+                system_prompt,
+                user_content,
+                max_tokens=50
+            )
+            selected_vendor_name = response.strip()
+            logger.info(f"LLM response for vendor extraction: '{selected_vendor_name}'")
+
+            if selected_vendor_name.upper() == "NONE":
+                logger.info(f"No vendor extracted from feedback: {feedback}")
+                return None
+
+            # Find matching vendor by name (exact match first)
+            selected_vendor_name_lower = selected_vendor_name.lower()
+            for vendor in available_vendors:
+                vendor_name = vendor.get('vendor_name') or vendor.get('name')
+                if vendor_name and vendor_name.lower() == selected_vendor_name_lower:
+                    logger.info(f"✅ LLM extracted vendor (exact match): {vendor_name}")
+                    return vendor
+
+            # Fallback: partial/fuzzy match if exact match fails
+            logger.info(f"No exact match for '{selected_vendor_name}', trying fuzzy match...")
+            for vendor in available_vendors:
+                vendor_name = vendor.get('vendor_name') or vendor.get('name')
+                if vendor_name:
+                    # Check if vendor name appears in LLM response or vice versa
+                    if (selected_vendor_name_lower in vendor_name.lower() or
+                        vendor_name.lower() in selected_vendor_name_lower):
+                        logger.info(f"✅ LLM extracted vendor (fuzzy match): {vendor_name}")
+                        return vendor
+
+            # If still no match, log all available vendors for debugging
+            logger.warning(f"LLM returned '{selected_vendor_name}' but not in list")
+            logger.warning(f"Available vendors: {[v.get('vendor_name') or v.get('name') for v in available_vendors]}")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to extract vendor semantically: {e}")
+            return None
+
     def detect_category_rules(self, prompt: str) -> Optional[str]:
         """
         Quick rule-based keyword matching for procurement categories.
@@ -59,32 +132,6 @@ class AgentPlanner:
             logger.warning(f"Failed to detect category for prompt via LLM: {e}")
         return "computer"
 
-    def classify_rejection_feedback(self, feedback: str) -> str:
-        """
-        Classifies rejection feedback to determine whether to rerun 'vendor_search' or 'draft_outreach'.
-        """
-        feedback_lower = feedback.lower()
-        
-        # Vendor-related cues
-        vendor_keywords = [
-            "expensive", "cheaper", "cost", "price", "vendor", "supplier", 
-            "delivery", "location", "local", "bangalore", "mumbai", "delhi", 
-            "city", "cheapest", "budget", "near"
-        ]
-        if any(kw in feedback_lower for kw in vendor_keywords):
-            return "vendor_search"
-            
-        # Draft-related cues
-        draft_keywords = [
-            "tone", "aggressive", "professional", "rewrite", "email", "outreach", 
-            "shorter", "longer", "subject", "wording", "text", "message", "grammar"
-        ]
-        if any(kw in feedback_lower for kw in draft_keywords):
-            return "draft_outreach"
-            
-        # Default fallback
-        return "draft_outreach"
-
     async def decide_next_action(self, state: WorkflowState) -> Dict[str, Any]:
         """
         Agentic Decision Engine: Dynamically determines the next action based on current state,
@@ -93,31 +140,173 @@ class AgentPlanner:
         import json
         import re
         from app.core.enums import TaskState, ApprovalAction
-        
+
         logger.info(f"Decision Engine: Evaluating next action. Current state step: {state.current_step}")
+        logger.info(f"Decision Engine: approval_action={state.approval_action}, selected_vendors={state.selected_vendors}, rejection_feedback={state.rejection_feedback}")
         
         # Rule-based fast paths to avoid unnecessary LLM latency for standard state transitions
-        if state.current_step in (TaskState.SCHEDULED, TaskState.RUNNING):
+        if state.current_step == TaskState.SCHEDULED:
             return {
                 "next_action": "vendor_search",
-                "reason": "Starting vendor research.",
+                "reason": "Task scheduled, starting vendor research.",
                 "parameters": {}
             }
-            
+
+        # If we're in RUNNING state, check what to do based on prior progress
+        if state.current_step == TaskState.RUNNING:
+            # No vendor data — run search (fresh start or after rejection cleared research_data)
+            if not state.research_data:
+                return {
+                    "next_action": "vendor_search",
+                    "reason": "No vendor data available. Starting vendor research.",
+                    "parameters": {}
+                }
+            # If we have vendors but no pricing analysis, check if user already selected a vendor
+            elif state.research_data and not state.analysis_summary:
+                # If we already have a draft (vendor was user-selected, pricing skipped), move to reflection
+                if state.draft:
+                    if not state.reflection_metadata:
+                        return {
+                            "next_action": "self_reflection",
+                            "reason": "Draft exists without analysis_summary (vendor user-selected). Proceeding to reflection.",
+                            "parameters": {}
+                        }
+                # If user already selected a vendor, skip pricing analysis and go to drafting
+                elif state.selected_vendor:
+                    vendor_name = state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name', 'Selected Vendor')
+                    logger.info(f"User previously selected vendor: {vendor_name}. Skipping pricing analysis.")
+                    # Set analysis_summary now to prevent re-entering this branch on next iteration
+                    state.analysis_summary = f"User selected {vendor_name} from available options. This vendor meets procurement requirements."
+                    return {
+                        "next_action": "draft_outreach",
+                        "reason": "User selected vendor. Skipping pricing analysis and proceeding to drafting.",
+                        "parameters": {}
+                    }
+                else:
+                    # No vendor selected yet, run pricing analysis
+                    return {
+                        "next_action": "pricing_analysis",
+                        "reason": "Vendor search completed. Proceeding to pricing analysis to select best option.",
+                        "parameters": {}
+                    }
+            # If we have pricing analysis but no draft, proceed to drafting
+            elif state.analysis_summary and not state.draft:
+                return {
+                    "next_action": "draft_outreach",
+                    "reason": "Pricing analysis complete. Proceeding to outreach drafting.",
+                    "parameters": {}
+                }
+            # If we have draft but no reflection, proceed to reflection
+            elif state.draft and not state.reflection_metadata:
+                return {
+                    "next_action": "self_reflection",
+                    "reason": "Outreach draft complete. Running self-reflection audit.",
+                    "parameters": {}
+                }
+            # If we have reflection but haven't executed, proceed to execution
+            elif state.reflection_metadata and not state.execution_result:
+                return {
+                    "next_action": "execute_outreach",
+                    "reason": "Final approval received. Proceeding to execution.",
+                    "parameters": {}
+                }
+
+        # If we just completed searching vendors and AUTO_APPROVE is false, we must wait for selection
         if state.current_step == TaskState.SEARCHING_VENDORS:
-            return {
-                "next_action": "pricing_analysis",
-                "reason": "Vendor search completed. Proceeding autonomously to pricing analysis.",
-                "parameters": {}
-            }
-            
+            from app.core import config
+            if config.AUTO_APPROVE:
+                vendors = state.research_data.get("vendors", []) if state.research_data else []
+                state.selected_vendors = vendors
+                return {
+                    "next_action": "pricing_analysis",
+                    "reason": "Auto-approve is enabled. Proceeding directly to pricing analysis.",
+                    "parameters": {}
+                }
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Awaiting human vendor selection and feedback.",
+                    "parameters": {"step": "vendor_selection"}
+                }
+                
+        # If we are waiting for vendor selection and received approval/selection
+        if state.current_step == TaskState.WAITING_VENDOR_SELECTION:
+            if state.approval_action == ApprovalAction.APPROVE:
+                # Try to extract vendor semantically from user feedback
+                selected_vendor_from_feedback = None
+                if state.rejection_feedback and state.selected_vendors:
+                    # Use LLM to understand which vendor user wants from natural language feedback
+                    selected_vendor_from_feedback = await self.extract_selected_vendor_semantic(
+                        state.rejection_feedback,
+                        state.selected_vendors
+                    )
+                    if selected_vendor_from_feedback:
+                        logger.info(f"LLM extracted vendor from feedback: {selected_vendor_from_feedback.get('vendor_name') or selected_vendor_from_feedback.get('name')}")
+
+                # If user selected a specific vendor (from feedback or explicit selection), use it and SKIP pricing analysis
+                selected = selected_vendor_from_feedback or (state.selected_vendors[0] if state.selected_vendors else None)
+
+                if selected:
+                    state.selected_vendor = selected
+                    vendor_name = state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name')
+                    logger.info(f"User selected vendor (SKIPPING pricing analysis): {vendor_name}")
+
+                    # Populate analysis_summary so draft has context
+                    if not state.analysis_summary:
+                        state.analysis_summary = f"User selected {vendor_name} from available options. This vendor meets procurement requirements."
+
+                    # IMPORTANT: Skip pricing_analysis and go directly to drafting
+                    return {
+                        "next_action": "draft_outreach",
+                        "reason": f"User selected {vendor_name}. Skipping pricing analysis and proceeding directly to draft.",
+                        "parameters": {}
+                    }
+                else:
+                    # User just approved vendors without specific selection - analyze pricing
+                    logger.info("User approved vendor list. Running pricing analysis to select best option.")
+                    return {
+                        "next_action": "pricing_analysis",
+                        "reason": "Human approved vendor list. Running analysis to select best option.",
+                        "parameters": {}
+                    }
+            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
+                # User rejected vendors - search again with updated constraints based on feedback
+                logger.info(f"🔄 REJECT detected! User rejected vendors with feedback: {state.rejection_feedback}")
+                state.rejection_feedback = state.rejection_feedback or "Vendors not acceptable. Search for alternatives."
+                state.feedback_history.append({
+                    "action": "REJECT_VENDORS",
+                    "feedback": state.rejection_feedback,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                logger.info(f"🔄 TRIGGERING RE-SEARCH with feedback: {state.rejection_feedback}")
+                return {
+                    "next_action": "vendor_search",
+                    "reason": f"Human rejected vendor selection. Re-searching with feedback: {state.rejection_feedback}",
+                    "parameters": {"updated_constraints": {"feedback": state.rejection_feedback}}
+                }
+            else:
+                return {
+                    "next_action": "wait_for_human",
+                    "reason": "Still waiting for human vendor selection.",
+                    "parameters": {"step": "vendor_selection"}
+                }
+                
+        # If we completed pricing analysis — proceed directly to drafting (no user gate)
         if state.current_step == TaskState.ANALYZING_PRICING:
             return {
                 "next_action": "draft_outreach",
-                "reason": "Pricing analysis completed. Proceeding autonomously to outreach drafting.",
+                "reason": "Pricing analysis complete. Proceeding to outreach drafting.",
                 "parameters": {}
             }
-            
+
+        # WAITING_PRICE_APPROVAL is no longer a user gate — auto-proceed
+        if state.current_step == TaskState.WAITING_PRICE_APPROVAL:
+            return {
+                "next_action": "draft_outreach",
+                "reason": "Pricing stage auto-approved. Proceeding to drafting.",
+                "parameters": {}
+            }
+                
         # After drafting outreach, we always run self-reflection immediately
         if state.current_step == TaskState.DRAFTING_OUTREACH:
             return {
@@ -129,26 +318,16 @@ class AgentPlanner:
         # After self-reflection completes
         if state.current_step == TaskState.SELF_REFLECTION:
             from app.core import config
-            reflection = state.reflection_metadata or {}
-            score_passed = reflection.get("tone_check_passed", True) and reflection.get("hallucination_free", True) and reflection.get("formatting_valid", True)
-            
-            if not score_passed and state.regeneration_count < config.MAX_REGENERATION_ATTEMPTS:
-                state.regeneration_count += 1
-                state.rejection_feedback = f"Self-reflection critique: {reflection.get('critique', 'Polishing needed.')}"
-                return {
-                    "next_action": "draft_outreach",
-                    "reason": f"Self-reflection quality checks failed. Regenerating draft (Attempt {state.regeneration_count}/{config.MAX_REGENERATION_ATTEMPTS}).",
-                    "parameters": {}
-                }
-                
-            from app.core import config as system_config
-            if system_config.AUTO_APPROVE:
+
+            if config.AUTO_APPROVE:
+                logger.info("AUTO_APPROVE enabled - skipping final approval gate")
                 return {
                     "next_action": "execute_outreach",
                     "reason": "Auto-approve enabled. Proceeding to outreach execution.",
                     "parameters": {}
                 }
             else:
+                logger.info("🔔 FINAL APPROVAL GATE: Waiting for human to approve/reject draft")
                 return {
                     "next_action": "wait_for_human",
                     "reason": "Awaiting human final approval of the outreach proposal.",
@@ -157,44 +336,21 @@ class AgentPlanner:
                 
         # If waiting for final approval
         if state.current_step == TaskState.WAITING_FINAL_APPROVAL:
+            from app.core import config
+
             if state.approval_action == ApprovalAction.APPROVE:
-                state.approval_action = None
-                state.rejection_feedback = None
                 return {
                     "next_action": "execute_outreach",
                     "reason": "Outreach proposal approved. Proceeding to final execution.",
                     "parameters": {}
                 }
-            elif state.approval_action == ApprovalAction.REJECT:
-                feedback = state.rejection_feedback or ""
-                next_act = self.classify_rejection_feedback(feedback)
-                
-                # Clear appropriate downstream states depending on what is being re-run
-                if next_act == "vendor_search":
-                    state.research_data = None
-                    state.analysis_summary = None
-                    state.selected_vendor = None
-                    state.draft = None
-                    state.improved_draft = None
-                    state.selected_vendors = []
-                    state.reflection_metadata = None
-                    reason = f"Re-running vendor search based on feedback: '{feedback}'"
-                else:
-                    state.draft = None
-                    state.improved_draft = None
-                    state.reflection_metadata = None
-                    reason = f"Re-running draft outreach based on feedback: '{feedback}'"
-                    
-                if feedback:
-                    state.feedback_history.append(feedback)
-                    
-                # Reset approval actions/feedback before rerunning
-                state.approval_action = None
-                state.rejection_feedback = None
-                
+            elif state.approval_action in (ApprovalAction.REJECT, ApprovalAction.MODIFY_REQUEST):
+                # User rejected final draft — always regenerate with feedback (no attempt limit)
+                logger.info(f"🔄 User rejected final draft with feedback: {state.rejection_feedback}")
+                state.regeneration_count = 0  # Reset so self-reflection quality loop runs fresh
                 return {
-                    "next_action": next_act,
-                    "reason": reason,
+                    "next_action": "draft_outreach",
+                    "reason": f"User rejected draft. Regenerating with feedback: {state.rejection_feedback}",
                     "parameters": {}
                 }
             else:
@@ -223,7 +379,7 @@ class AgentPlanner:
             "- 'pricing_analysis': Select/analyze vendor pricing based on selected vendors.\n"
             "- 'draft_outreach': Re-generate outreach email using feedback details.\n"
             "- 'self_reflection': Re-run self-reflection check on draft.\n"
-            "- 'wait_for_human': Pause and request human input (params: 'step': 'final_approval').\n\n"
+            "- 'wait_for_human': Pause and request human input (params: 'step': 'vendor_selection', 'price_approval', 'final_approval').\n\n"
             "Return ONLY a JSON object of this structure:\n"
             "{\n"
             '  "next_action": "vendor_search" | "pricing_analysis" | "draft_outreach" | "wait_for_human",\n'
@@ -266,7 +422,12 @@ class AgentPlanner:
             return decision
         except Exception as e:
             logger.error(f"Decision Engine: LLM call failed, falling back to safe recovery transition: {e}")
-            return {"next_action": "draft_outreach", "reason": "Fallback: rewrite outreach.", "parameters": {}}
+            if state.current_step == TaskState.WAITING_VENDOR_SELECTION:
+                return {"next_action": "vendor_search", "reason": "Fallback: search again.", "parameters": {}}
+            elif state.current_step == TaskState.WAITING_PRICE_APPROVAL:
+                return {"next_action": "vendor_search", "reason": "Fallback: return to search.", "parameters": {}}
+            else:
+                return {"next_action": "draft_outreach", "reason": "Fallback: rewrite outreach.", "parameters": {}}
 
     async def run_research(self, state: WorkflowState, task_id: str, transition_callback) -> None:
         """
@@ -298,8 +459,8 @@ class AgentPlanner:
             external_results = await external_vendor_search_tool(query=state.prompt, category=category)
             external_vendors = external_results.get("vendors", [])
             
-            # Transition state back to SEARCHING_VENDORS
-            await transition_callback(TaskState.SEARCHING_VENDORS)
+            # Transition state back to RUNNING
+            await transition_callback(TaskState.RUNNING)
             
         all_vendors = internal_vendors + external_vendors
         
@@ -327,22 +488,40 @@ class AgentPlanner:
             
         analysis_result = await pricing_analysis_tool(query=state.prompt, vendors=vendors)
         state.analysis_summary = analysis_result.get("analysis_summary", "")
-        state.selected_vendor = analysis_result.get("recommended_vendor", None)
-        logger.info(f"Planner selected vendor: {state.selected_vendor.get('vendor_name') if state.selected_vendor else 'None'}")
+
+        # IMPORTANT: Only update selected_vendor if user hasn't already selected one
+        # User's vendor selection should NOT be overwritten by pricing analysis
+        if not state.selected_vendor:
+            state.selected_vendor = analysis_result.get("recommended_vendor", None)
+            vendor_name = (state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name')) if state.selected_vendor else 'None'
+            logger.info(f"Pricing analysis recommended vendor: {vendor_name}")
+        else:
+            # User already selected a vendor, keep it
+            user_selected = state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name')
+            logger.info(f"🔒 Keeping user-selected vendor (NOT overwriting with pricing recommendation): {user_selected}")
 
     async def run_draft(self, state: WorkflowState) -> None:
         """
         Generates outreach proposal/draft targeting the selected vendor.
+        Incorporates user feedback from Step 1 vendor selection to guide tone/content.
         """
         logger.info("Planner starting draft generation step")
         if not state.selected_vendor:
             state.draft = "No vendor selected to draft outreach for."
             return
-            
+
+        # If user provided feedback at vendor selection, use it to guide the draft
+        user_feedback = state.rejection_feedback if state.rejection_feedback else None
+        if user_feedback:
+            logger.info(f"📝 Using Step 1 feedback to guide draft generation: {user_feedback}")
+
+        # Pass memory_context to enforce vendor constraint in draft generation
         rec_result = await recommendation_tool(
             query=state.prompt,
             selected_vendor=state.selected_vendor,
-            analysis_summary=state.analysis_summary or ""
+            analysis_summary=state.analysis_summary or "",
+            user_feedback=user_feedback,
+            memory_context=state.memory_context
         )
         state.draft = rec_result.get("draft", "")
         logger.info("Planner completed draft generation")

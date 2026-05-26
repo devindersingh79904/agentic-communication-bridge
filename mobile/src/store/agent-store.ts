@@ -33,6 +33,7 @@ interface AgentState {
   reflectionMetadata: ReflectionMetadata | null;
   confidenceScore: number | null;
   lastActivityTime: number;
+  finalEmail: string | null;
 
   // Actions
   setHostUrl: (url: string) => void;
@@ -61,13 +62,14 @@ interface AgentState {
   setReflectionMetadata: (metadata: ReflectionMetadata | null) => void;
   setConfidenceScore: (score: number | null) => void;
   updateLastActivity: () => void;
+  setFinalEmail: (email: string | null) => void;
   addToHistory: (item: TaskHistoryItem) => void;
   updateHistoryItem: (taskId: string, updates: Partial<TaskHistoryItem>) => void;
 
   // Web socket controller actions
   connectWebSocket: (prompt: string) => void;
   disconnectWebSocket: () => void;
-  sendApprovalResponse: (action: ApprovalAction, feedback?: string) => void;
+  sendApprovalResponse: (action: ApprovalAction, feedback?: string, selectedVendors?: VendorResult[]) => void;
   sendStop: () => void;
   resetStore: (clearMessages?: boolean) => void;
 }
@@ -101,6 +103,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   reflectionMetadata: null,
   confidenceScore: null,
   lastActivityTime: Date.now(),
+  finalEmail: null,
 
   setCurrentPendingStep: (currentPendingStep) => set({ currentPendingStep }),
   setCurrentStepData: (currentStepData) => set({ currentStepData }),
@@ -181,6 +184,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
   setConfidenceScore: (confidenceScore) => set({ confidenceScore }),
   updateLastActivity: () => set({ lastActivityTime: Date.now() }),
+  setFinalEmail: (finalEmail) => set({ finalEmail }),
 
   addToHistory: (item) =>
     set((state) => {
@@ -203,13 +207,21 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const baseUrl = HTTP_BASE_URL;
     const url = `${baseUrl}/v1/metadata/enums`;
     try {
+      console.log(`Fetching metadata from: ${url}`);
       const response = await fetch(url);
+      if (!response.ok) {
+        console.warn(`Failed to fetch metadata: HTTP ${response.status}`);
+        return;
+      }
       const json = await response.json();
       if (json && json.data && json.data.agent_steps) {
+        console.log('Metadata fetched successfully:', json.data.agent_steps);
         set({ backendSteps: json.data.agent_steps });
+      } else {
+        console.warn('Unexpected metadata response format:', json);
       }
-    } catch (err) {
-      console.warn('Failed to fetch backend enum metadata:', err);
+    } catch (err: any) {
+      console.warn('Failed to fetch backend enum metadata:', err?.message || err);
     }
   },
 
@@ -259,25 +271,45 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendApprovalResponse: (action, feedback) => {
-    const { socket, taskId, correlationId } = get();
+  sendApprovalResponse: (action, feedback, selectedVendors) => {
+    const { socket, taskId, correlationId, currentPendingStep } = get();
     set({ isAwaitingApproval: false });
 
     const feedbackMessage = feedback && feedback.trim() ? feedback.trim() : '';
+    const stepLabel = currentPendingStep
+      ? currentPendingStep.replace(/_/g, ' ').toLowerCase()
+      : 'step';
 
     if (action === 'APPROVE') {
-      get().appendMessage({
-        sender: 'user',
-        text: feedbackMessage
-          ? `✅ Approved outreach proposal with feedback: "${feedbackMessage}"`
-          : `✅ Approved outreach proposal. Proceeding.`,
-      });
+      // Show feedback-based approval message (backend will extract vendor semantically)
+      if (feedbackMessage) {
+        get().appendMessage({
+          sender: 'user',
+          text: `✅ Approved with feedback: "${feedbackMessage}"`,
+        });
+      } else {
+        get().appendMessage({
+          sender: 'user',
+          text: `✅ Approved ${stepLabel}. Proceeding.`,
+        });
+      }
     } else if (action === 'REJECT') {
+      if (feedbackMessage) {
+        get().appendMessage({
+          sender: 'user',
+          text: `❌ Rejected ${stepLabel}. Feedback: "${feedbackMessage}"`,
+        });
+      } else {
+        get().appendMessage({
+          sender: 'user',
+          text: `❌ Rejected ${stepLabel}. Re-running.`,
+        });
+      }
+      set({ isRegenerating: true });
+    } else if (action === 'MODIFY_REQUEST') {
       get().appendMessage({
         sender: 'user',
-        text: feedbackMessage
-          ? `❌ Rejected outreach proposal. Feedback: "${feedbackMessage}"`
-          : `❌ Rejected outreach proposal. Re-running.`,
+        text: `✍️ Requested Draft Modifications: "${feedbackMessage}"`,
       });
       set({ isRegenerating: true });
     }
@@ -290,6 +322,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           feedback: feedbackMessage || undefined,
           task_id: taskId,
           correlation_id: correlationId,
+          selected_vendors: selectedVendors || undefined,
         })
       );
     }
@@ -353,6 +386,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       pricingAnalysis: null,
       reflectionMetadata: null,
       confidenceScore: null,
+      finalEmail: null,
     }));
   },
 }));

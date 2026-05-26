@@ -6,11 +6,14 @@ export type TaskState =
   | 'RUNNING'
   | 'SEARCHING_VENDORS'
   | 'EXTERNAL_SEARCHING'
+  | 'WAITING_VENDOR_SELECTION'
   | 'ANALYZING_PRICING'
+  | 'WAITING_PRICE_APPROVAL'
   | 'DRAFTING_OUTREACH'
   | 'SELF_REFLECTION'
   | 'WAITING_FINAL_APPROVAL'
   | 'COMPLETED'
+  | 'SUCCESS'
   | 'FAILED'
   | 'CANCELLED'
   | 'FAILED_RETRYING';
@@ -40,7 +43,7 @@ export interface VendorResult {
   score?: number;
   source_type?: 'internal' | 'external' | string;
   catalog?: Record<string, string | number>;
-  items?: Array<Record<string, any>>;
+  items?: Record<string, string | number>;
   catalog_items?: any;
 }
 
@@ -71,7 +74,7 @@ export interface StatusUpdateEvent extends BaseWebSocketEvent {
 
 export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
   event_type: 'APPROVAL_REQUIRED';
-  task_state: 'WAITING_FINAL_APPROVAL';
+  task_state: TaskState;
   agent_step: AgentStep;
   draft_message: string;
   step_data?: string;
@@ -85,7 +88,7 @@ export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
 
 export interface TaskCompletedEvent extends BaseWebSocketEvent {
   event_type: 'TASK_COMPLETED';
-  task_state: 'COMPLETED';
+  task_state: 'SUCCESS';
   message: string;
   final_response?: string;
   vendors?: VendorResult[];
@@ -123,7 +126,7 @@ export type ServerEvent =
   | PingEvent
   | PongEvent;
 
-export type ApprovalAction = 'APPROVE' | 'REJECT';
+export type ApprovalAction = 'APPROVE' | 'REJECT' | 'MODIFY_REQUEST';
 
 export interface ClientStartTaskEvent {
   event_type: 'START_TASK';

@@ -296,30 +296,27 @@ Orchestration does **not** start on WebSocket connect. The flow is:
 3. Background orchestration task spawned → transitions `SCHEDULED → RUNNING`.
 4. The user's prompt propagates through all LLM calls, making generated drafts contextually relevant.
 
-### Why No Persistence Layer?
-The workflow state is intentionally kept in-memory and scoped to a single WebSocket session lifecycle. No database, Redis, or checkpoint system is used because:
-- Each task runs within one continuous WebSocket connection.
-- State is cleaned up immediately on completion, cancellation, or disconnect.
-- This keeps the implementation lightweight and assignment-focused.
+### Persistence Layer (SQLite)
+To prevent context loss on unexpected client disconnections, network drops, or tab switching, the backend uses a local SQLite database (`agent_procurement.db`).
+- **Database Schema**: Managed by [TaskRepository](file:///Users/dsp/development/assignment/backend/app/repositories/task_repository.py). The `tasks` table includes a `workflow_state_json` text column where the entire `WorkflowState` object is serialized and saved on every state transition.
+- **Audit Trail**: Every state transition is recorded in the `task_transitions` table with `old_state`, `new_state`, and `transitioned_at` timestamps for forensic and audit purposes.
+- **Workflow State Resumption**: When a client establishes a WebSocket connection and issues a `START_TASK` event with an existing `task_id`, the orchestrator queries SQLite, loads the serialized JSON workflow state, hydrates the `WorkflowState` object, and resumes execution seamlessly from the last recorded state.
 
 ---
 
-## 10. Runtime In-Memory State
+## 10. Runtime In-Memory State & Coordination
 
 ### `active_tasks` Registry
-The `active_tasks` dictionary is the sole runtime coordination structure for all active WebSocket orchestration sessions. It maps each `task_id` to a metadata dict containing the websocket reference, asyncio task handle, approval event, task state, and workflow state.
+The `active_tasks` dictionary acts as the ephemeral, process-local coordination structure for active WebSocket connections. It maps each `task_id` to its live session metadata:
+```python
+active_tasks[task_id] = {
+    "websocket": websocket,
+    "task": asyncio_task_ref,
+    "approval_event": asyncio.Event(),
+    "task_state": TaskState,
+    "cancelled": bool
+}
+```
+* **Separation of Concerns**: Ephemeral connection handles (like the open `websocket` socket object and active `asyncio.Task` loop handles) are kept in-memory, while persistent workflow configurations and execution history are written to the SQLite database.
+* **Cleanup**: On connection close, cancellation, or final completion, registry records are cleanly detached to prevent memory leaks.
 
-This is **not** a persistence layer. It is an ephemeral process-local registry that exists only while the server process is running:
-- Entries are created when a task is registered (`register_task`).
-- Entries are removed immediately upon completion, cancellation, or disconnect (`cleanup_task`).
-- No data survives a server restart — by design.
-
-### Shared `WorkflowState`
-The `WorkflowState` dataclass is the centralized mutable runtime context shared between the orchestrator, tools, and LLM services. It is graph-inspired: each tool writes to a specific field and downstream tools read from it, eliminating parameter chaining.
-
-### Why No Database / Redis / Queue?
-Repositories and external persistence are intentionally avoided because:
-- **Session-scoped**: Each orchestration run lives within a single WebSocket connection. There is no need to resume across connections.
-- **Short-lived**: Tasks complete in seconds, not hours. Checkpoint/restore adds complexity without value.
-- **Assignment-focused**: Keeping state in-memory reduces infrastructure dependencies and keeps the system self-contained.
-- **Common in practice**: Many real-time orchestration systems (including production agent runners) keep active runtime state in-memory and only persist completed results — if at all.

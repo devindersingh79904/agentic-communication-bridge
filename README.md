@@ -20,25 +20,33 @@ A production-style human-in-the-loop AI agentic system. It features a React Nati
 
 ## Key Frontend UX Features
 
-The mobile interface is designed to maximize human-in-the-loop (HITL) visibility and responsiveness:
-- **Approval & Rejection Timeline**: A visual progression showing real-time agent status updates alongside any historical feedback and regeneration attempts.
-- **Regeneration Visibility**: Visual feedback indicating when the agent is revising drafts based on user input, tracking regeneration limits.
-- **Optimistic Cancellation**: Instant feedback when the user stops the task, preventing extra network spam.
-- **Approval Timeout Countdown**: A clear visual timer counting down the consent gate window, making it obvious when the agent will automatically cancel.
+The mobile interface is designed as an interactive, conversational copilot rather than an enterprise dashboard:
+- **Conversational Chat Feed**: Removes complex tabs and logs. All updates, retrieved supplier cards, comparisons, and audits render inline as cards in a single chat stream.
+- **Inline Vendor Selection**: Checking boxes, entering feedback, and submitting selection choices are done directly on the vendor results card in the chat log.
+- **Dynamic Progress Checklist**: A lightweight indicator at the top showing the current stage: `Search` -> `Selection` -> `Comparison` -> `Outreach` -> `Approval`.
+- **Inline final approval**: Outreach drafts, tone checks, hallucination checks, layout audit checks, and critique comments display in a comprehensive verification card with inline Approve/Reject actions.
+- **Dynamic Replanning**: Submitting rejection feedback instructs the agent planner to update constraints, avoid previously rejected vendors (filtered out via RAG database query enrichment), and rerun stages dynamically.
 
 ---
 
 ## How it Works
 
-The application operates as a real-time, event-driven state machine guided by an LLM-based planner/decision engine and executed via a structured `ToolRegistry`. Instead of a hardcoded linear sequence, the system dynamically decides its path and handles human inputs:
+The application operates as a real-time, event-driven state machine guided by an LLM-based planner/decision engine and executed via a structured `ToolRegistry`. The state machine has the following states (`SCHEDULED`, `RUNNING`, `SEARCHING_VENDORS`, `WAITING_VENDOR_SELECTION`, `ANALYZING_PRICING`, `WAITING_PRICE_APPROVAL`, `DRAFTING_OUTREACH`, `SELF_REFLECTION`, `WAITING_FINAL_APPROVAL`, `COMPLETED`, `FAILED`, `FAILED_RETRYING`, `CANCELLED`):
 
 1. **Client Connects**: The client opens a WebSocket to `/v1/agent/connect`. The task is initialized in `SCHEDULED` state.
 2. **Client Sends `START_TASK`**: The client sends a `START_TASK` event containing a user prompt. If the event payload includes a previously saved `task_id`, the system automatically restores the serialized `WorkflowState` from the SQLite database and resumes the task from its last active state.
 3. **LLM Decision Loop**: At each step of execution, the orchestrator queries the LLM Planner (`app/services/agent_planner.py`), which inspects the prompt, constraints, history, and feedback, and decides the next action (e.g. run a tool, complete execution, or wait for human input).
 4. **Tool Registry & Execution Traces**: All logic steps are executed via the `ToolRegistry` abstraction. It logs detailed input/output JSON traces for every execution in `WorkflowState.tool_traces` and wraps them in retry logic (exponential backoff) with graceful degraded fallbacks.
-5. **Interactive Human-in-the-Loop (HITL) Gate**:
-   - `WAITING_FINAL_APPROVAL`: Pauses only after pricing analysis, outreach drafting, and self-reflection quality checks are complete. Displays the final outreach text and quality audit badges (Tone Check, Accuracy Check, Layout Verification).
-   - If the user rejects, they can provide feedback (e.g., "too expensive" to rerun vendor search and pricing; "rewrite professionally" to rerun outreach drafting). The system dynamically parses this feedback to determine which steps to rerun.
+5. **Three Human-in-the-Loop (HITL) Gates**:
+   - **Gate 1 — Vendor Selection (`WAITING_VENDOR_SELECTION`)**: After vendor search completes, the system pauses. The user is presented with retrieved vendor cards.
+     - **Approve**: User can approve with optional feedback (e.g., "use ByteEdge Systems"). The backend uses LLM-based semantic extraction to identify vendor preferences from feedback.
+     - **Reject with feedback**: If rejected, the planner re-runs vendor search with updated constraints.
+   - **Gate 2 — Price Approval (`WAITING_PRICE_APPROVAL`)**: After pricing analysis completes, the system pauses for approval.
+     - If approved, the agent proceeds to draft outreach.
+     - If rejected, the agent can re-analyze or re-search based on feedback.
+   - **Gate 3 — Final Outreach Approval (`WAITING_FINAL_APPROVAL`)**: Pauses after self-reflection critique. Shows the final outreach draft, tone check, hallucination-free verification, formatting validation, and critique comments.
+     - If approved, the agent executes outreach and transitions to `COMPLETED`.
+     - If rejected with feedback, the planner reroutes the task back to `DRAFTING_OUTREACH` to regenerate.
 6. **Execution & Completion**: When final approval is given, the agent executes the outreach, updates the database, sends a `TASK_COMPLETED` payload, and gracefully terminates the session.
 
 Workflow state is persisted directly to SQLite via `workflow_state_json` on every state transition, ensuring zero context loss on connection drops.
@@ -216,17 +224,17 @@ uv run pytest
 
 ### Covered Test Categories
 1. **Orchestrator Workflows (`tests/test_orchestrator.py`)**:
-   - **Full Approval Flow**: Connects, receives updates, approves draft, completes successfully.
-   - **Rejection & Regeneration Loop**: Rejects draft, regenerates outreach, approves next draft, completes.
-   - **Max Regeneration Attempts**: Rejects repeatedly to verify hard-limit error code (`MAX_REGENERATION_EXCEEDED`).
+   - **Full Approval Flow**: Connects, approves all 3 HITL gates (vendor selection, price approval, final approval), completes successfully.
+   - **Rejection & Regeneration Loop**: Rejects at vendor selection, re-runs search, then approves all remaining steps.
+   - **Max Regeneration Attempts**: Rejects vendor selection repeatedly, then approves and completes to verify bounded retry behavior.
    - **Approval Timeout Cancellation**: Pauses and automatically cancels after timeout expires.
    - **Stop / Task Interrupt Flow**: Cancels mid-execution.
    - **STOP Spam / Idempotency**: Simulates multiple concurrent STOP events to verify only a single cancellation is executed.
 2. **WebSocket Connection & Lifecycle (`tests/test_websocket.py`)**:
-   - **Real WebSocket Integration**: Verifies websocket endpoint interaction via FastAPI `TestClient`.
+   - **Real WebSocket Integration**: Verifies full 3-gate approval flow over the real WebSocket endpoint via FastAPI `TestClient`.
    - **Unexpected Disconnect Cleanup**: Validates that when a client websocket disconnects unexpectedly, the orchestration task is cancelled and cleanly removed from the active tasks registry, preventing orphan memory leaks.
 3. **State Transitions (`tests/test_state_transitions.py`)**:
-   - Validates all allowed state machine transitions (e.g. `SCHEDULED` -> `RUNNING` -> `WAITING_FINAL_APPROVAL` -> `EXECUTING` -> `COMPLETED`).
+   - Validates all allowed state machine transitions (e.g. `SCHEDULED` → `RUNNING` → `WAITING_VENDOR_SELECTION` → `RUNNING` → `WAITING_PRICE_APPROVAL` → `COMPLETED`).
    - Verifies blocking/prevention of invalid transitions (e.g. terminal state changes).
 4. **LLM Integration & Refinement (`tests/test_llm_service.py`)**:
    - **Two-Pass LLM Refinement**: Validates the evaluation-then-rewrite pipeline.
@@ -278,6 +286,7 @@ The interrupt mechanism is built on three layers:
 | **FastAPI** | Async-first web framework with native WebSocket support, automatic OpenAPI docs, and Pydantic integration |
 | **Pydantic** | Schema validation and serialization for all WebSocket event payloads and API responses |
 | **OpenAI SDK** (`openai`) | Async client for GPT-4.1-mini integration — used for draft generation and self-reflection |
+| **chromadb** | Vector database for storing and querying vendor profiles using semantic search embeddings |
 | **python-dotenv** | Loads `.env` files for local development configuration without modifying system environment |
 | **uvicorn** | ASGI server for running the FastAPI application with hot-reload during development |
 | **websockets** | Used in the integration test script for programmatic WebSocket client testing |
@@ -289,3 +298,13 @@ The interrupt mechanism is built on three layers:
 | **React Native (Expo)** | Cross-platform mobile framework — enables web, iOS, and Android from a single codebase |
 | **Zustand** | Lightweight, hook-based state management with no boilerplate — chosen over Redux for simplicity and direct WebSocket integration |
 | **TypeScript** | End-to-end type safety matching the backend Pydantic schemas |
+
+---
+
+## Vector Database Seeding & Mock Data (ChromaDB)
+
+The internal vendor directory is indexed using ChromaDB for semantic search capabilities.
+
+- **Storage Location**: By default, data is persisted locally at the directory specified by `CHROMA_PERSIST_PATH` (defaults to `./chroma_db`).
+- **Mock Vendors File**: The source database records are kept in [sample_vendors.json](file:///Users/dsp/development/assignment/backend/app/rag/sample_vendors.json). It contains exactly **40 mock vendors** (10 vendors per category: `computer`, `transport`, `food`, and `stationery`).
+- **Seeding Logic**: On first query execution, if the database is either empty or contains the old sample size (12 items), the system resets the database and seeds it with the full list of 40 vendors from `sample_vendors.json`. Each vendor is embedded using their formatted name, location, rating, delivery times, items list, and description.

@@ -28,7 +28,9 @@ The frontend client should make a request to this endpoint once on application s
       "RUNNING",
       "SEARCHING_VENDORS",
       "EXTERNAL_SEARCHING",
+      "WAITING_VENDOR_SELECTION",
       "ANALYZING_PRICING",
+      "WAITING_PRICE_APPROVAL",
       "DRAFTING_OUTREACH",
       "SELF_REFLECTION",
       "WAITING_FINAL_APPROVAL",
@@ -51,7 +53,8 @@ The frontend client should make a request to this endpoint once on application s
     ],
     "approval_actions": [
       "APPROVE",
-      "REJECT"
+      "REJECT",
+      "MODIFY_REQUEST"
     ],
     "agent_steps": [
       "SEARCHING_VENDORS",
