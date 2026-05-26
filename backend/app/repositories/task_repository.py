@@ -2,9 +2,9 @@ import os
 import sqlite3
 import json
 import logging
-from datetime import datetime
 from typing import Optional, List, Dict, Any
 from app.core import config
+from app.utils.time import utc_now_iso
 
 logger = logging.getLogger("app.repositories.task_repository")
 
@@ -62,7 +62,7 @@ class TaskRepository:
 
     def create_task(self, task_id: str, status: str, user_prompt: str) -> None:
         """Saves a new task in SCHEDULED state."""
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         logger.info(f"DB: Creating task {task_id} with prompt: '{user_prompt[:50]}'")
         with self._get_connection() as conn:
             conn.execute(
@@ -73,7 +73,7 @@ class TaskRepository:
 
     def update_task_status(self, task_id: str, old_status: str, new_status: str) -> None:
         """Updates status of a task and writes to the transitions audit trail."""
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         logger.info(f"DB: Transitioning task {task_id} state from {old_status} -> {new_status}")
         with self._get_connection() as conn:
             # Update task status
@@ -90,7 +90,7 @@ class TaskRepository:
 
     def update_task_approval(self, task_id: str, approval_state: str, feedback: Optional[str] = None) -> None:
         """Saves HIL approval action and user feedback."""
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         logger.info(f"DB: Logging approval action {approval_state} for task {task_id}")
         with self._get_connection() as conn:
             conn.execute(
@@ -101,7 +101,7 @@ class TaskRepository:
 
     def update_task_final_output(self, task_id: str, final_output: str) -> None:
         """Stores final output execution result or outreach draft."""
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         logger.info(f"DB: Saving final output for task {task_id}")
         with self._get_connection() as conn:
             conn.execute(
@@ -112,7 +112,7 @@ class TaskRepository:
 
     def update_task_memory(self, task_id: str, memory_data: Dict[str, Any]) -> None:
         """Persists workflow context/history variables for long-term memory."""
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         memory_json = json.dumps(memory_data)
         logger.info(f"DB: Storing memory for task {task_id}")
         with self._get_connection() as conn:
@@ -143,7 +143,7 @@ class TaskRepository:
 
     def update_task_workflow_state(self, task_id: str, state_json: str) -> None:
         """Persists the complete workflow state JSON to the database."""
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         logger.info(f"DB: Saving workflow state JSON for task {task_id}")
         with self._get_connection() as conn:
             conn.execute(

@@ -30,6 +30,9 @@ class WorkflowState:
     # Multi-step approval tracking
     pending_agent_step: Optional[AgentStep] = None
     pending_step_data: Optional[str] = None
+    vendor_selection_approved: bool = False
+    price_approval_approved: bool = False
+    final_approval_approved: bool = False
 
     # Production-grade agent extensions
     reflection_metadata: Optional[dict] = None
@@ -58,6 +61,9 @@ class WorkflowState:
             "approval_action": self.approval_action.value if self.approval_action else None,
             "pending_agent_step": self.pending_agent_step.value if self.pending_agent_step else None,
             "pending_step_data": self.pending_step_data,
+            "vendor_selection_approved": self.vendor_selection_approved,
+            "price_approval_approved": self.price_approval_approved,
+            "final_approval_approved": self.final_approval_approved,
             "reflection_metadata": self.reflection_metadata,
             "internal_rag_confidence": self.internal_rag_confidence,
             "memory_context": self.memory_context,
@@ -88,6 +94,9 @@ class WorkflowState:
         state.pending_agent_step = AgentStep(pas) if pas else None
         
         state.pending_step_data = data.get("pending_step_data")
+        state.vendor_selection_approved = data.get("vendor_selection_approved", False)
+        state.price_approval_approved = data.get("price_approval_approved", False)
+        state.final_approval_approved = data.get("final_approval_approved", False)
         state.reflection_metadata = data.get("reflection_metadata")
         state.internal_rag_confidence = data.get("internal_rag_confidence", 0.0)
         state.memory_context = data.get("memory_context")

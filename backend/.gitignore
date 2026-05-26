@@ -40,6 +40,7 @@ coverage.xml
 # Logs & Databases
 # =========================
 logs/
+chroma_db/
 *.log
 *.sqlite
 *.sqlite3

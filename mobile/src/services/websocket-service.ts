@@ -1,7 +1,7 @@
 import { useAgentStore } from '../store/agent-store';
 import { SERVER_EVENTS, CLIENT_EVENTS } from '../constants/websocket-events';
-import { ServerEvent, AgentStep } from '../types/websocket';
-import { WS_BASE_URL, WS_AGENT_ENDPOINT } from '../constants/config';
+import { ServerEvent, AgentStep, VendorResult } from '../types/websocket';
+import { HTTP_BASE_URL, WS_BASE_URL, WS_AGENT_ENDPOINT } from '../constants/config';
 
 let timerId: any = null;
 let heartbeatTimerId: any = null;
@@ -9,9 +9,29 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let currentPromptRef = '';
 
+const getVendorName = (vendor: VendorResult, index: number) =>
+  vendor.vendor_name || vendor.name || `Vendor ${index + 1}`;
+
+const buildVendorSummaryMessage = (vendors?: VendorResult[]) => {
+  if (!vendors || vendors.length === 0) return null;
+
+  const lines = vendors.slice(0, 5).map((vendor, index) => {
+    const location = vendor.location || 'location n/a';
+    const rating = vendor.rating ? `rating ${vendor.rating}` : 'rating n/a';
+    const delivery = vendor.delivery_days ? `${vendor.delivery_days}d delivery` : 'delivery n/a';
+    return `${index + 1}. ${getVendorName(vendor, index)} - ${location} - ${rating} - ${delivery}`;
+  });
+
+  return `Candidate vendors:\n${lines.join('\n')}`;
+};
+
 export const connectAgentWS = (prompt: string) => {
   currentPromptRef = prompt;
   const store = useAgentStore.getState();
+  const existingTaskId = store.taskId;
+  const resumeTaskId = existingTaskId && !existingTaskId.startsWith('task-opt-')
+    ? existingTaskId
+    : null;
 
   // Clean up any existing timers
   if (timerId) {
@@ -23,8 +43,44 @@ export const connectAgentWS = (prompt: string) => {
     heartbeatTimerId = null;
   }
 
-  // Pre-initialize prompt in chat log and set optimistic SCHEDULED state
-  store.connectWebSocket(prompt);
+  if (resumeTaskId) {
+    store.setCurrentPrompt(prompt);
+    store.setConnectionStatus('connecting');
+    store.appendMessage({
+      sender: 'system',
+      text: `Restoring workflow ${resumeTaskId.slice(0, 8)}...`,
+    });
+  } else {
+    // Pre-initialize prompt in chat log and set optimistic SCHEDULED state
+    store.connectWebSocket(prompt);
+  }
+
+  // Trigger REST session restoration before opening connection
+  if (resumeTaskId) {
+    (async () => {
+      try {
+        const url = `${HTTP_BASE_URL}/v1/workflow/${resumeTaskId}`;
+        const response = await fetch(url);
+        if (response.ok) {
+          const body = await response.json();
+          if (body && body.data) {
+            const d = body.data;
+            store.setWorkflowVersion(d.workflow_version || 1);
+            if (d.reasoning_traces) store.setReasoningTraces(d.reasoning_traces);
+            if (d.vendors) store.setVendorResults(d.vendors);
+            if (d.selected_vendor) store.setSelectedVendor(d.selected_vendor);
+            if (d.selected_vendors) store.setSelectedVendors(d.selected_vendors);
+            if (d.pricing_analysis) store.setPricingAnalysis(d.pricing_analysis);
+            if (d.reflection_metadata) store.setReflectionMetadata(d.reflection_metadata);
+            if (d.draft_message) store.setDraftMessage(d.draft_message);
+            if (d.current_state) store.updateTaskState(d.current_state);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed restoring workflow session:', err);
+      }
+    })();
+  }
 
   let finalWsBaseUrl = WS_BASE_URL;
   if (typeof window !== 'undefined' && window.location && window.location.protocol === 'https:') {
@@ -53,12 +109,10 @@ export const connectAgentWS = (prompt: string) => {
       });
 
       // Send START_TASK event with the user prompt (and existing task_id if resuming)
-      const existingTaskId = store.taskId;
-      const isRealTaskId = existingTaskId && !existingTaskId.startsWith('task-opt-');
       const startEvent = {
         event_type: CLIENT_EVENTS.START_TASK,
         prompt: prompt,
-        task_id: isRealTaskId ? existingTaskId : undefined,
+        task_id: resumeTaskId ?? undefined,
       };
       ws.send(JSON.stringify(startEvent));
 
@@ -93,11 +147,26 @@ export const connectAgentWS = (prompt: string) => {
         if ('selected_vendor' in data && data.selected_vendor) {
           store.setSelectedVendor(data.selected_vendor);
         }
+        if ('selected_vendors' in data && data.selected_vendors) {
+          store.setSelectedVendors(data.selected_vendors);
+        }
         if ('pricing_analysis' in data && data.pricing_analysis) {
           store.setPricingAnalysis(data.pricing_analysis);
+          if (data.pricing_analysis.selected_vendor) {
+            store.setSelectedVendor(data.pricing_analysis.selected_vendor);
+          }
+          if (data.pricing_analysis.selected_vendors) {
+            store.setSelectedVendors(data.pricing_analysis.selected_vendors);
+          }
         }
         if ('reflection_metadata' in data && data.reflection_metadata) {
           store.setReflectionMetadata(data.reflection_metadata);
+        }
+        if ('workflow_version' in data && data.workflow_version) {
+          store.setWorkflowVersion(data.workflow_version as number);
+        }
+        if ('reasoning_traces' in data && data.reasoning_traces) {
+          store.setReasoningTraces(data.reasoning_traces as any[]);
         }
 
         switch (event_type) {
@@ -163,8 +232,17 @@ export const connectAgentWS = (prompt: string) => {
             if (approvalData.selected_vendor) {
               store.setSelectedVendor(approvalData.selected_vendor);
             }
+            if (approvalData.selected_vendors) {
+              store.setSelectedVendors(approvalData.selected_vendors);
+            }
             if (approvalData.pricing_analysis) {
               store.setPricingAnalysis(approvalData.pricing_analysis);
+              if (approvalData.pricing_analysis.selected_vendor) {
+                store.setSelectedVendor(approvalData.pricing_analysis.selected_vendor);
+              }
+              if (approvalData.pricing_analysis.selected_vendors) {
+                store.setSelectedVendors(approvalData.pricing_analysis.selected_vendors);
+              }
             }
 
             // Set dynamic timeout countdown
@@ -185,6 +263,9 @@ export const connectAgentWS = (prompt: string) => {
             }, 1000);
 
             const isFinalApproval = approvalData.task_state === 'WAITING_FINAL_APPROVAL';
+            const vendorSummary = approvalData.task_state === 'WAITING_VENDOR_SELECTION'
+              ? buildVendorSummaryMessage(approvalData.vendors)
+              : null;
             store.appendMessage({
               sender: 'system',
               text: isFinalApproval
@@ -193,6 +274,14 @@ export const connectAgentWS = (prompt: string) => {
             });
 
             if (isFinalApproval && (approvalData.draft_message || approvalData.step_data)) {
+              if (approvalData.pricing_analysis?.summary) {
+                store.appendMessage({
+                  sender: 'agent',
+                  text: `Vendor comparison:\n\n${approvalData.pricing_analysis.summary}`,
+                  agent_step: 'ANALYZING_PRICING' as AgentStep,
+                });
+              }
+
               // Show the LLM-generated draft email in chat on every iteration
               store.appendMessage({
                 sender: 'agent',
@@ -202,7 +291,7 @@ export const connectAgentWS = (prompt: string) => {
             } else if (!isFinalApproval) {
               store.appendMessage({
                 sender: 'agent',
-                text: approvalData.step_data ?? approvalData.draft_message,
+                text: vendorSummary ?? approvalData.step_data ?? approvalData.draft_message,
                 agent_step: approvalData.agent_step,
               });
             }
@@ -223,6 +312,15 @@ export const connectAgentWS = (prompt: string) => {
             const completedData = data as import('../types/websocket').TaskCompletedEvent;
             if (completedData.final_response) {
               store.setFinalEmail(completedData.final_response);
+            }
+            if (completedData.selected_vendor) {
+              store.setSelectedVendor(completedData.selected_vendor);
+            }
+            if (completedData.selected_vendors) {
+              store.setSelectedVendors(completedData.selected_vendors);
+            }
+            if (completedData.pricing_analysis) {
+              store.setPricingAnalysis(completedData.pricing_analysis);
             }
             
             // Add final outcome to history item

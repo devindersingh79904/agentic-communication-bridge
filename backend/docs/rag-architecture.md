@@ -16,7 +16,7 @@ To recommend accurate suppliers, the system uses semantic vector search against 
 
 ## 2. Vendor Data Schema
 
-Mock vendor data is stored in the structured JSON file [`sample_vendors.json`](file:///Users/dsp/development/assignment/backend/app/rag/sample_vendors.json). It contains exactly **40 mock vendors** (10 vendors per procurement category: `computer`, `transport`, `food`, and `stationery`).
+Mock vendor data is stored in the structured JSON file `app/rag/sample_vendors.json`. It contains exactly **40 mock vendors** (10 vendors per procurement category: `computer`, `transport`, `food`, and `stationery`).
 
 ### Vendor JSON Attributes:
 | Attribute | Type | Description |

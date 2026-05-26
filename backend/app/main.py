@@ -4,7 +4,7 @@ from app.core.logger import setup_logging, get_logger
 from app.core.middleware import CorrelationIdMiddleware
 from app.schemas.base_response import BaseSuccessResponse
 from app.utils.response_builder import success_response
-from app.api import metadata_api
+from app.api import metadata_api, workflow_api
 from app.websocket import agent_websocket
 
 # Initialize centralized logging before starting the app
@@ -30,6 +30,7 @@ app.add_middleware(CorrelationIdMiddleware)
 
 # Register API Routers
 app.include_router(metadata_api.router)
+app.include_router(workflow_api.router)
 app.include_router(agent_websocket.router)
 
 

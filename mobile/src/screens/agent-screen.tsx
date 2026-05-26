@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useAgentStore } from '../store/agent-store';
 import { connectAgentWS } from '../services/websocket-service';
-import { Message, TaskHistoryItem } from '../types/websocket';
+import { Message, TaskHistoryItem, VendorResult } from '../types/websocket';
 
 const DEFAULT_STEPS = [
   { id: 'SEARCHING_VENDORS', label: 'Vendor Search' },
@@ -21,6 +21,47 @@ const DEFAULT_STEPS = [
   { id: 'SELF_REFLECTION', label: 'Self Review' },
   { id: 'EXECUTING', label: 'Execute' },
 ];
+
+const getVendorName = (vendor: VendorResult) =>
+  vendor.vendor_name || vendor.name || 'Unnamed vendor';
+
+const getVendorKey = (vendor: VendorResult, index: number) =>
+  `${vendor.vendor_name || vendor.name || 'vendor'}-${vendor.location || 'unknown'}-${index}`;
+
+const formatVendorConfidence = (vendor: VendorResult) => {
+  const confidence = vendor.confidence_score ?? vendor.confidence ?? vendor.score;
+  if (typeof confidence !== 'number') return null;
+  const normalized = confidence <= 1 ? Math.round(confidence * 100) : Math.round(confidence);
+  return `${normalized}% match`;
+};
+
+const formatVendorItems = (vendor: VendorResult) => {
+  const itemSource = vendor.items ?? vendor.catalog_items ?? vendor.catalog;
+  if (!itemSource) return null;
+
+  if (Array.isArray(itemSource)) {
+    return itemSource
+      .slice(0, 3)
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'name' in item) {
+          return String((item as { name?: unknown }).name);
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  if (typeof itemSource === 'object') {
+    return Object.entries(itemSource)
+      .slice(0, 3)
+      .map(([name, price]) => `${name}: ${price}`)
+      .join(', ');
+  }
+
+  return null;
+};
 
 export const AgentScreen = () => {
   const {
@@ -47,8 +88,11 @@ export const AgentScreen = () => {
     draftMessage,
     reflectionMetadata,
     selectedVendor,
+    selectedVendors,
+    pricingAnalysis,
     confidenceScore,
     finalEmail,
+    reasoningTraces,
   } = useAgentStore();
 
   const [promptInput, setPromptInput] = useState('Find reliable procurement vendors for custom server hardware.');
@@ -56,6 +100,7 @@ export const AgentScreen = () => {
   const [tempHost, setTempHost] = useState(hostUrl);
   const [isHistoryVisible, setIsHistoryVisible] = useState(false);
   const [feedbackInput, setFeedbackInput] = useState(''); // Will be sent as user feedback on rejection
+  const [selectedVendorKeys, setSelectedVendorKeys] = useState<string[]>([]);
 
   const flatListRef = useRef<FlatList>(null);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -85,6 +130,19 @@ export const AgentScreen = () => {
     }
   }, [isAwaitingApproval]);
 
+  useEffect(() => {
+    if (taskState !== 'WAITING_VENDOR_SELECTION' || vendorResults.length === 0) {
+      setSelectedVendorKeys([]);
+      return;
+    }
+
+    setSelectedVendorKeys((previousKeys) => {
+      const validKeys = vendorResults.map((vendor, index) => getVendorKey(vendor, index));
+      const stillSelected = previousKeys.filter((key) => validKeys.includes(key));
+      return stillSelected.length > 0 ? stillSelected : [validKeys[0]];
+    });
+  }, [taskState, vendorResults]);
+
 
   const handleStart = () => {
     if (!promptInput.trim()) return;
@@ -97,9 +155,24 @@ export const AgentScreen = () => {
 
   const handleApprove = () => {
     const feedback = feedbackInput.trim();
+    if (taskState === 'WAITING_FINAL_APPROVAL' && feedback) {
+      sendApprovalResponse('MODIFY_REQUEST', feedback, undefined);
+      setFeedbackInput('');
+      return;
+    }
 
-    // Send feedback and vendor list to backend for LLM-based semantic understanding
-    sendApprovalResponse('APPROVE', feedback || undefined, vendorResults);
+    const selectedVendors =
+      taskState === 'WAITING_VENDOR_SELECTION'
+        ? vendorResults.filter((vendor, index) =>
+            selectedVendorKeys.includes(getVendorKey(vendor, index))
+          )
+        : undefined;
+
+    sendApprovalResponse(
+      'APPROVE',
+      feedback || undefined,
+      selectedVendors && selectedVendors.length > 0 ? selectedVendors : undefined
+    );
     setFeedbackInput('');
   };
 
@@ -238,6 +311,26 @@ export const AgentScreen = () => {
   const stepsToRender = backendSteps.length > 0
     ? backendSteps.map((step) => ({ id: step, label: step.replace(/_/g, ' ') }))
     : DEFAULT_STEPS;
+  const finalApprovalFeedback = taskState === 'WAITING_FINAL_APPROVAL' && feedbackInput.trim().length > 0;
+  const selectedVendorNames = (selectedVendors.length > 0 ? selectedVendors : selectedVendor ? [selectedVendor] : [])
+    .map(getVendorName)
+    .join(', ');
+  const draftRecipientName = selectedVendor ? getVendorName(selectedVendor) : selectedVendorNames;
+
+
+  const selectedVendorCount = vendorResults.filter((vendor, index) =>
+    selectedVendorKeys.includes(getVendorKey(vendor, index))
+  ).length;
+
+  const toggleVendorSelection = (vendor: VendorResult, index: number) => {
+    const key = getVendorKey(vendor, index);
+    setSelectedVendorKeys((previousKeys) => {
+      if (previousKeys.includes(key)) {
+        return previousKeys.filter((selectedKey) => selectedKey !== key);
+      }
+      return [...previousKeys, key];
+    });
+  };
 
   return (
     <View style={styles.screen}>
@@ -319,6 +412,20 @@ export const AgentScreen = () => {
         </View>
       )}
 
+      {/* Reasoning Traces */}
+      {taskState !== 'IDLE' && reasoningTraces && reasoningTraces.length > 0 && (
+        <View style={styles.reasoningContainer}>
+          <Text style={styles.reasoningTitle}>🧠 Agent Reasoning Traces & Graph Status</Text>
+          <ScrollView style={{maxHeight: 100}} nestedScrollEnabled={true}>
+            {reasoningTraces.map((trace: any, idx: number) => (
+              <Text key={idx} style={styles.reasoningText}>
+                • <Text style={{fontWeight: 'bold', color: '#60A5FA'}}>{trace.decision}:</Text> {trace.reason} ({trace.status})
+              </Text>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Messages */}
       <ScrollView
         ref={scrollViewRef}
@@ -343,20 +450,91 @@ export const AgentScreen = () => {
           }
         />
 
-        {/* Vendor Results Display removed - only show in chat */}
-
         {/* Approval Panel - Vendor Selection */}
         {taskState === 'WAITING_VENDOR_SELECTION' && !isRegenerating && (
           <View style={styles.approvalPanel}>
             <View style={styles.waitingApprovalContainer}>
               <Text style={styles.waitingApprovalTitle}>⏳ STEP 1: VENDOR SELECTION</Text>
               <Text style={styles.waitingApprovalSubtitle}>
-                Review the vendors in the chat and choose to approve, reject, or provide feedback.
+                Select one vendor to draft directly, or select multiple vendors to compare before drafting.
               </Text>
             </View>
 
+              {vendorResults.length > 0 ? (
+                <View style={styles.vendorSelectionContainer}>
+                  <Text style={styles.vendorResultsTitle}>
+                    Candidate vendors ({vendorResults.length})
+                  </Text>
+                  {vendorResults.map((vendor, index) => {
+                    const key = getVendorKey(vendor, index);
+                    const isSelected = selectedVendorKeys.includes(key);
+                    const confidence = formatVendorConfidence(vendor);
+                    const items = formatVendorItems(vendor);
+
+                    return (
+                      <TouchableOpacity
+                        key={key}
+                        activeOpacity={0.85}
+                        onPress={() => toggleVendorSelection(vendor, index)}
+                        style={[
+                          styles.vendorResultCard,
+                          isSelected && styles.vendorResultCardSelected,
+                        ]}
+                      >
+                        <View style={styles.vendorCardHeader}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.vendorResultName}>{getVendorName(vendor)}</Text>
+                            {!!vendor.category && (
+                              <Text style={styles.vendorResultCategory}>{vendor.category}</Text>
+                            )}
+                          </View>
+                          <View style={[styles.vendorSelectBadge, isSelected && styles.vendorSelectBadgeActive]}>
+                            <Text style={styles.vendorSelectBadgeText}>
+                              {isSelected ? 'Selected' : 'Select'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.vendorMetaRow}>
+                          {!!vendor.location && (
+                            <Text style={styles.vendorMetaText}>📍 {vendor.location}</Text>
+                          )}
+                          {!!vendor.rating && (
+                            <Text style={styles.vendorMetaText}>⭐ {vendor.rating}</Text>
+                          )}
+                          {!!vendor.delivery_days && (
+                            <Text style={styles.vendorMetaText}>🚚 {vendor.delivery_days}d</Text>
+                          )}
+                          {!!confidence && (
+                            <Text style={styles.vendorMetaText}>🎯 {confidence}</Text>
+                          )}
+                        </View>
+
+                        {!!items && (
+                          <Text style={styles.vendorItemsText} numberOfLines={2}>
+                            {items}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : (
+                <View style={styles.noVendorResultsBox}>
+                  <Text style={styles.noVendorResultsTitle}>No vendor payload received</Text>
+                  <Text style={styles.noVendorResultsText}>
+                    Reject with feedback to run the search again, or check backend logs for the vendor_search result.
+                  </Text>
+                </View>
+              )}
+
               {timeoutCountdown !== null && !isRegenerating && (
                 <Text style={styles.timeoutText}>Auto-cancel in {timeoutCountdown}s</Text>
+              )}
+              {selectedVendorCount > 1 && (
+                <Text style={styles.selectionHintText}>
+                  {selectedVendorCount} vendors selected. The agent will compare them and draft to the best fit.
+                </Text>
               )}
 
               {isRegenerating ? (
@@ -395,7 +573,9 @@ export const AgentScreen = () => {
                       onPress={handleApprove}
                       disabled={connectionStatus !== 'connected'}
                     >
-                      <Text style={styles.actionButtonText}>✅ Approve</Text>
+                      <Text style={styles.actionButtonText}>
+                        ✅ Approve{selectedVendorCount > 0 ? ` (${selectedVendorCount})` : ''}
+                      </Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.rejectButton, connectionStatus !== 'connected' && styles.buttonDisconnected]}
@@ -418,9 +598,9 @@ export const AgentScreen = () => {
           <View style={styles.finalEmailCard}>
             <View style={styles.finalEmailHeader}>
               <Text style={styles.finalEmailTitle}>✅ Email Approved & Sent</Text>
-              {selectedVendor && (
+              {!!draftRecipientName && (
                 <Text style={styles.finalEmailVendor}>
-                  To: {selectedVendor.vendor_name || selectedVendor.name}
+                  To: {draftRecipientName}
                 </Text>
               )}
             </View>
@@ -437,6 +617,16 @@ export const AgentScreen = () => {
                 Review the draft email and approve to send or reject to regenerate.
               </Text>
             </View>
+
+            {pricingAnalysis?.summary && (
+              <View style={styles.metadataBox}>
+                <Text style={styles.metadataTitle}>📊 Vendor Comparison:</Text>
+                {!!selectedVendorNames && (
+                  <Text style={styles.metadataText}>• Selected: {selectedVendorNames}</Text>
+                )}
+                <Text style={styles.metadataText}>{pricingAnalysis.summary}</Text>
+              </View>
+            )}
 
             {/* Self-Reflection Metadata */}
             {reflectionMetadata && (
@@ -461,9 +651,9 @@ export const AgentScreen = () => {
             {draftMessage && (
               <View style={styles.draftBox}>
                 <Text style={styles.draftTitle}>📧 Draft Email:</Text>
-                {selectedVendor && (
+                {!!draftRecipientName && (
                   <Text style={styles.draftVendor}>
-                    To: {selectedVendor.vendor_name || selectedVendor.name}
+                    To: {draftRecipientName}
                   </Text>
                 )}
                 <Text style={styles.draftContent}>{draftMessage}</Text>
@@ -510,7 +700,9 @@ export const AgentScreen = () => {
                     onPress={handleApprove}
                     disabled={connectionStatus !== 'connected'}
                   >
-                    <Text style={styles.actionButtonText}>✅ Approve & Send</Text>
+                    <Text style={styles.actionButtonText}>
+                      {finalApprovalFeedback ? '✍️ Regenerate' : '✅ Approve & Send'}
+                    </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.rejectButton, connectionStatus !== 'connected' && styles.buttonDisconnected]}
@@ -909,6 +1101,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginBottom: 12,
   },
+  vendorSelectionContainer: {
+    marginBottom: 12,
+  },
   vendorResultCard: {
     backgroundColor: '#0F172A',
     borderColor: '#334155',
@@ -916,6 +1111,16 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     padding: 10,
     marginBottom: 8,
+  },
+  vendorResultCardSelected: {
+    borderColor: '#10B981',
+    borderWidth: 2,
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+  },
+  vendorCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
   },
   vendorResultName: {
     color: '#F8FAFC',
@@ -965,6 +1170,55 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 4,
     fontWeight: '600',
+  },
+  vendorSelectBadge: {
+    backgroundColor: '#334155',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  vendorSelectBadgeActive: {
+    backgroundColor: '#059669',
+  },
+  vendorSelectBadgeText: {
+    color: '#F8FAFC',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  vendorMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+  },
+  vendorMetaText: {
+    color: '#CBD5E1',
+    fontSize: 10,
+  },
+  vendorItemsText: {
+    color: '#94A3B8',
+    fontSize: 10,
+    lineHeight: 15,
+    marginTop: 8,
+  },
+  noVendorResultsBox: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderColor: '#EF4444',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  noVendorResultsTitle: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  noVendorResultsText: {
+    color: '#FECACA',
+    fontSize: 11,
+    lineHeight: 16,
   },
   approvalPanel: {
     backgroundColor: '#1E293B',
@@ -1017,6 +1271,13 @@ const styles = StyleSheet.create({
     color: '#F59E0B',
     fontSize: 12,
     fontWeight: 'bold',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  selectionHintText: {
+    color: '#93C5FD',
+    fontSize: 12,
+    lineHeight: 18,
     marginBottom: 12,
     textAlign: 'center',
   },
@@ -1346,5 +1607,26 @@ const styles = StyleSheet.create({
     color: '#E2E8F0',
     fontSize: 12,
     fontWeight: '600',
+  },
+  reasoningContainer: {
+    backgroundColor: '#1E293B',
+    padding: 12,
+    marginHorizontal: 12,
+    marginTop: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  reasoningTitle: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 6,
+  },
+  reasoningText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 4,
   },
 });

@@ -160,9 +160,10 @@ def test_websocket_approval_flow(test_client):
             "prompt": "Find hardware suppliers"
         })
 
-        # 2. Receive status updates and approval required events (3 wait steps now)
+        # 2. Receive status updates and approval required events.
+        # Runtime gates only vendor selection and final outreach approval; pricing is automatic.
         # We approve each step and continue
-        for step_num in range(3):
+        for step_num in range(2):
             events = []
             for _ in range(5):
                 msg = ws.receive_json()

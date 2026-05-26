@@ -29,6 +29,7 @@ export interface BaseWebSocketEvent {
   event_type: string;
   correlation_id: string;
   task_id?: string;
+  workflow_version?: number;
   timestamp?: string;
 }
 
@@ -40,16 +41,18 @@ export interface VendorResult {
   delivery_days?: number;
   location?: string;
   confidence_score?: number;
+  confidence?: number;
   score?: number;
   source_type?: 'internal' | 'external' | string;
   catalog?: Record<string, string | number>;
-  items?: Record<string, string | number>;
+  items?: Array<{ name?: string; price?: string | number }> | Record<string, string | number>;
   catalog_items?: any;
 }
 
 export interface PricingAnalysis {
   summary?: string;
   selected_vendor?: VendorResult;
+  selected_vendors?: VendorResult[];
   reasoning?: string[];
   confidence?: number;
 }
@@ -69,6 +72,7 @@ export interface StatusUpdateEvent extends BaseWebSocketEvent {
   message: string;
   vendors?: VendorResult[];
   selected_vendor?: VendorResult;
+  selected_vendors?: VendorResult[];
   pricing_analysis?: PricingAnalysis;
 }
 
@@ -83,6 +87,7 @@ export interface ApprovalRequiredEvent extends BaseWebSocketEvent {
   reflection_metadata?: ReflectionMetadata;
   vendors?: VendorResult[];
   selected_vendor?: VendorResult;
+  selected_vendors?: VendorResult[];
   pricing_analysis?: PricingAnalysis;
 }
 
@@ -93,6 +98,7 @@ export interface TaskCompletedEvent extends BaseWebSocketEvent {
   final_response?: string;
   vendors?: VendorResult[];
   selected_vendor?: VendorResult;
+  selected_vendors?: VendorResult[];
   pricing_analysis?: PricingAnalysis;
 }
 
@@ -139,6 +145,8 @@ export interface ClientApprovalResponseEvent {
   feedback?: string;
   correlation_id: string;
   task_id: string;
+  selected_vendors?: VendorResult[];
+  workflow_version?: number;
 }
 
 export interface ClientStopEvent {

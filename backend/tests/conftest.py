@@ -14,10 +14,25 @@ from openai import AsyncOpenAI
 
 @pytest.fixture(autouse=True)
 async def clean_registry():
-    """Cleans up active tasks registry before and after each test."""
+    """Cleans up active tasks registry and database tables before and after each test."""
     active_tasks.clear()
+    from app.storage.workflow_repository import workflow_repo
+    try:
+        with workflow_repo._get_connection() as conn:
+            conn.execute("DELETE FROM tasks")
+            conn.execute("DELETE FROM task_transitions")
+            conn.commit()
+    except Exception:
+        pass
     yield
     active_tasks.clear()
+    try:
+        with workflow_repo._get_connection() as conn:
+            conn.execute("DELETE FROM tasks")
+            conn.execute("DELETE FROM task_transitions")
+            conn.commit()
+    except Exception:
+        pass
 
 
 @pytest.fixture

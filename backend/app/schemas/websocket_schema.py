@@ -1,7 +1,7 @@
 from typing import Optional, Dict, Any, List
-from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from app.core.enums import WebSocketEventType, TaskState, AgentStep, ApprovalAction
+from app.utils.time import utc_now_iso
 
 class BaseWebSocketEvent(BaseModel):
     """
@@ -10,7 +10,8 @@ class BaseWebSocketEvent(BaseModel):
     event_type: WebSocketEventType
     correlation_id: str
     task_id: Optional[str] = None
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    workflow_version: Optional[int] = None
+    timestamp: str = Field(default_factory=utc_now_iso)
 
 class StatusUpdateEvent(BaseWebSocketEvent):
     """
@@ -22,6 +23,7 @@ class StatusUpdateEvent(BaseWebSocketEvent):
     message: str
     vendors: Optional[List[Dict[str, Any]]] = None
     selected_vendor: Optional[Dict[str, Any]] = None
+    selected_vendors: Optional[List[Dict[str, Any]]] = None
     pricing_analysis: Optional[Dict[str, Any]] = None
 
 class ApprovalRequiredEvent(BaseWebSocketEvent):
@@ -38,6 +40,7 @@ class ApprovalRequiredEvent(BaseWebSocketEvent):
     reflection_metadata: Optional[Dict[str, Any]] = None
     vendors: Optional[List[Dict[str, Any]]] = None
     selected_vendor: Optional[Dict[str, Any]] = None
+    selected_vendors: Optional[List[Dict[str, Any]]] = None
     pricing_analysis: Optional[Dict[str, Any]] = None
 
 class TaskCompletedEvent(BaseWebSocketEvent):
@@ -50,6 +53,7 @@ class TaskCompletedEvent(BaseWebSocketEvent):
     final_response: Optional[str] = None
     vendors: Optional[List[Dict[str, Any]]] = None
     selected_vendor: Optional[Dict[str, Any]] = None
+    selected_vendors: Optional[List[Dict[str, Any]]] = None
     pricing_analysis: Optional[Dict[str, Any]] = None
 
 class TaskCancelledEvent(BaseWebSocketEvent):
@@ -91,3 +95,17 @@ class StartTaskEvent(BaseWebSocketEvent):
     event_type: WebSocketEventType = WebSocketEventType.START_TASK
     prompt: str
 
+class IncomingWebSocketEvent(BaseModel):
+    """
+    Typed client-to-server WebSocket envelope used by the endpoint before
+    dispatching START_TASK, APPROVAL_RESPONSE, STOP, PING, and PONG events.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    event_type: WebSocketEventType
+    workflow_version: int = 1
+    task_id: Optional[str] = None
+    prompt: Optional[str] = None
+    action: Optional[ApprovalAction] = None
+    feedback: Optional[str] = None
+    selected_vendors: Optional[List[Dict[str, Any]]] = None

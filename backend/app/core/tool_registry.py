@@ -1,12 +1,12 @@
 import logging
 import asyncio
 import time
-from datetime import datetime
 from typing import Callable, Dict, Any, List
 
 from app.core import config
 from app.models.workflow_state import WorkflowState
 from app.core.enums import TaskState
+from app.utils.time import utc_now_iso
 
 logger = logging.getLogger("app.core.tool_registry")
 
@@ -19,15 +19,22 @@ class ToolRegistry:
         self._registry[name] = func
         logger.info(f"Registered tool: '{name}'")
 
+    def get(self, name: str) -> Callable:
+        """Returns a registered tool by name."""
+        if name not in self._registry:
+            raise KeyError(f"Tool '{name}' is not registered in the ToolRegistry.")
+        return self._registry[name]
+
+    def has(self, name: str) -> bool:
+        """Checks whether a tool is registered."""
+        return name in self._registry
+
     async def execute(self, name: str, state: WorkflowState, *args, **kwargs) -> Any:
         """
         Executes a registered tool with retries, timeout/retry status updates,
         and tool trace capturing.
         """
-        if name not in self._registry:
-            raise KeyError(f"Tool '{name}' is not registered in the ToolRegistry.")
-
-        func = self._registry[name]
+        func = self.get(name)
         logger.info(f"Executing tool '{name}' via registry")
 
         # 1. Capture snapshot of state before execution (Input Trace)
@@ -72,7 +79,7 @@ class ToolRegistry:
                     "tool": name,
                     "input": input_snapshot,
                     "output": output_snapshot,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": utc_now_iso(),
                     "duration_seconds": round(time.time() - start_time, 3),
                     "attempts": attempts,
                 }
@@ -129,7 +136,7 @@ class ToolRegistry:
             "tool": name,
             "input": input_snapshot,
             "output": {"error": str(last_error)},
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": utc_now_iso(),
             "duration_seconds": round(time.time() - start_time, 3),
             "attempts": attempts,
             "failed": True
@@ -138,12 +145,18 @@ class ToolRegistry:
         
         # Graceful fallback logic depending on tool
         if name == "vendor_search":
-            logger.info("Applying fallback for vendor_search tool: empty list")
+            logger.info("Applying fallback for vendor_search tool: local sample vendors")
+            try:
+                from app.services.agent_planner import planner
+                fallback_vendors = planner._fallback_vendors_for_category("computer", top_k=3)
+            except Exception as fallback_error:
+                logger.warning("Could not load vendor_search sample fallback: %s", fallback_error)
+                fallback_vendors = []
             state.research_data = {
                 "category": "computer",
-                "vendors": [],
-                "internal_confidence": 0.0,
-                "market_insights": "Fallback applied due to search tool failure."
+                "vendors": fallback_vendors,
+                "internal_confidence": 0.5 if fallback_vendors else 0.0,
+                "market_insights": "Local sample fallback applied due to search tool failure."
             }
             return
         elif name == "pricing_analysis":
@@ -185,4 +198,3 @@ tool_registry.register("pricing_analysis", analysis_tool)
 tool_registry.register("draft_outreach", draft_tool)
 tool_registry.register("self_reflection", reflection_tool)
 tool_registry.register("execute_outreach", execution_tool)
-

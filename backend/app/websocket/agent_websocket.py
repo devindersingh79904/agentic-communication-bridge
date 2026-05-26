@@ -1,60 +1,48 @@
 import uuid
 import asyncio
-from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
 from app.core import config
 from app.core.logger import get_logger, set_correlation_id, set_task_id, correlation_id_ctx, task_id_ctx
-from app.core.enums import WebSocketEventType, ApprovalAction
+from app.core.enums import WebSocketEventType, AgentStep, TaskState
+from app.models.workflow_models import RuntimeWorkflowState
 from app.models.workflow_state import WorkflowState
-from app.repositories.task_repository import task_repo
-from app.services.agent_orchestrator_service import (
-    register_task,
-    set_task_reference,
-    handle_approval_response,
-    cancel_task,
-    run_orchestration,
-    is_websocket_active,
-    active_tasks
-)
+from app.runtime.event_streamer import build_approval_required_event, build_pricing_payload
+from app.schemas.websocket_schema import IncomingWebSocketEvent
+from app.services.agent_orchestrator_service import active_tasks
+from app.storage.workflow_repository import workflow_repo
+from app.utils.time import utc_now_iso
+from app.websocket.connection_manager import connection_manager
+from app.runtime.workflow_runtime import workflow_runtime
 
 router = APIRouter(tags=["WebSocket"])
 logger = get_logger("websocket.agent")
 
 async def heartbeat_loop(websocket: WebSocket, task_id: str, correlation_id: str):
-    from app.core.enums import WebSocketEventType
+    """
+    Heartbeat checker that sends PING messages to client and closes socket if timeout exceeded.
+    """
     interval = config.HEARTBEAT_INTERVAL_SECONDS
     timeout = config.HEARTBEAT_TIMEOUT_SECONDS
-    logger.info("Starting heartbeat PING/PONG checker for task %s", task_id)
+    logger.info("Starting heartbeat loop for task %s", task_id)
     try:
         while True:
             await asyncio.sleep(interval)
-            task_info = active_tasks.get(task_id)
-            if not task_info or websocket.client_state.value == 2: # DISCONNECTED
+            if websocket.client_state.value == 2: # DISCONNECTED
                 break
                 
-            last_activity = task_info.get("last_activity_time", 0.0)
-            now = asyncio.get_event_loop().time()
-            if now - last_activity > timeout:
-                logger.warning("Heartbeat timeout exceeded (%ds) for task %s. Disconnecting.", int(now - last_activity), task_id)
-                try:
-                    await websocket.close()
-                except Exception:
-                    pass
-                await cancel_task(task_id)
-                break
-                
-            # Send server-initiated ping message
+            # Perform ping
             try:
                 await websocket.send_json({
                     "event_type": WebSocketEventType.PING,
                     "correlation_id": correlation_id,
                     "task_id": task_id,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "timestamp": utc_now_iso()
                 })
             except Exception:
                 logger.warning("Heartbeat PING write failed. Closing socket.")
-                await cancel_task(task_id)
+                await workflow_runtime.cleanup_session(task_id)
                 break
     except asyncio.CancelledError:
         pass
@@ -63,22 +51,17 @@ async def heartbeat_loop(websocket: WebSocket, task_id: str, correlation_id: str
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    if is_websocket_active(websocket):
-        logger.warning("Duplicate task creation attempted for active websocket connection")
-        return
-        
     correlation_id = websocket.headers.get("x-correlation-id") or str(uuid.uuid4())
+    # Generate temporary task id, replaced if resuming
     task_id = str(uuid.uuid4())
     
     corr_token = set_correlation_id(correlation_id)
     task_token = set_task_id(task_id)
     
-    logger.info("WebSocket connection established")
+    logger.info("New WebSocket connection accepted.")
     
-    approval_event = asyncio.Event()
-    await register_task(task_id, websocket, approval_event, correlation_id)
-    
-    # Start heartbeat loop in background
+    # Register connection temporarily
+    await connection_manager.register(task_id, websocket, correlation_id)
     heartbeat_task = asyncio.create_task(heartbeat_loop(websocket, task_id, correlation_id))
     
     orchestration_started = False
@@ -86,102 +69,160 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             payload = await websocket.receive_json()
+            await connection_manager.update_activity(task_id)
             
-            # Update last activity timestamp
-            task_info = active_tasks.get(task_id)
-            if task_info:
-                task_info["last_activity_time"] = asyncio.get_event_loop().time()
-                
             if not isinstance(payload, dict):
-                logger.warning("Invalid websocket payload: %s", payload)
+                logger.warning("Invalid WebSocket JSON payload type.")
+                continue
+
+            try:
+                incoming = IncomingWebSocketEvent.model_validate(payload)
+            except ValidationError as exc:
+                logger.warning("Invalid WebSocket event payload: %s", exc)
                 continue
                 
-            event_type = payload.get("event_type")
+            event_type = incoming.event_type
+            incoming_version = incoming.workflow_version if "workflow_version" in payload else None
             
             if event_type == WebSocketEventType.START_TASK:
                 if orchestration_started:
                     continue
                 
-                # Check for task resumption / reconnection
-                client_task_id = payload.get("task_id")
+                client_task_id = incoming.task_id
                 if client_task_id:
-                    existing_task = task_repo.get_task(client_task_id)
-                    if existing_task:
-                        logger.info("Resuming existing task %s from client reconnect", client_task_id)
-                        from app.services.agent_orchestrator_service import _tasks_lock
-                        async with _tasks_lock:
-                            if task_id in active_tasks:
-                                active_info = active_tasks.pop(task_id)
-                                task_id = client_task_id
-                                active_tasks[task_id] = active_info
-                                set_task_id(task_id)
-                        prompt = existing_task.get("user_prompt", "")
-                        state = WorkflowState(prompt=prompt)
-                    else:
-                        raw_prompt = payload.get("prompt", "")
-                        prompt = raw_prompt.strip()
-                        if not prompt:
-                            continue
-                        task_repo.create_task(task_id, "SCHEDULED", prompt)
-                        state = WorkflowState(prompt=prompt)
-                else:
-                    raw_prompt = payload.get("prompt", "")
-                    prompt = raw_prompt.strip()
-                    if not prompt:
+                    # Reconnection flow: check if task exists in DB
+                    existing_session = workflow_repo.get_session(client_task_id)
+                    if existing_session:
+                        logger.info("Resuming active session task %s", client_task_id)
+                        # Re-bind websocket
+                        await connection_manager.rebind(client_task_id, websocket)
+                        # Remove temporary mapping
+                        await connection_manager.unregister(task_id)
+                        task_id = client_task_id
+                        set_task_id(task_id)
+
+                        # Trigger status stream update upon reconnect to restore UI state
+                        legacy_state = WorkflowState.from_json(existing_session.workflow_state_json)
+
+                        tool_state_map = {
+                            RuntimeWorkflowState.PLANNING: TaskState.SEARCHING_VENDORS,
+                            RuntimeWorkflowState.EXECUTING: TaskState.RUNNING,
+                            RuntimeWorkflowState.WAITING_APPROVAL: legacy_state.current_step or TaskState.WAITING_VENDOR_SELECTION,
+                            RuntimeWorkflowState.COMPLETED: TaskState.COMPLETED,
+                            RuntimeWorkflowState.FAILED: TaskState.FAILED,
+                            RuntimeWorkflowState.CANCELLED: TaskState.CANCELLED
+                        }
+                        ui_state = tool_state_map.get(existing_session.status, TaskState.RUNNING)
+
+                        await websocket.send_json({
+                            "event_type": WebSocketEventType.STATUS_UPDATE,
+                            "correlation_id": correlation_id,
+                            "task_id": task_id,
+                            "workflow_version": existing_session.workflow_version,
+                            "task_state": ui_state.value,
+                            "agent_step": legacy_state.pending_agent_step.value if legacy_state.pending_agent_step else AgentStep.SEARCHING_VENDORS.value,
+                            "message": "Connection restored. Resuming workflow view...",
+                            "vendors": legacy_state.research_data.get("vendors") if legacy_state.research_data else None,
+                            "selected_vendor": legacy_state.selected_vendor,
+                            "selected_vendors": legacy_state.selected_vendors,
+                            "pricing_analysis": build_pricing_payload(legacy_state),
+                            "reflection_metadata": legacy_state.reflection_metadata,
+                            "draft_message": legacy_state.improved_draft or legacy_state.draft,
+                            "timestamp": utc_now_iso()
+                        })
+
+                        if existing_session.status == RuntimeWorkflowState.WAITING_APPROVAL:
+                            approval_messages = {
+                                TaskState.WAITING_VENDOR_SELECTION: "Vendor search completed. Select candidates and approve.",
+                                TaskState.WAITING_FINAL_APPROVAL: "Self-reflection completed. Approve outreach proposal draft.",
+                            }
+                            await websocket.send_json(
+                                build_approval_required_event(
+                                    correlation_id=correlation_id,
+                                    task_id=task_id,
+                                    workflow_version=existing_session.workflow_version,
+                                    task_state=ui_state,
+                                    agent_step=legacy_state.pending_agent_step or AgentStep.SELF_REFLECTION,
+                                    message=approval_messages.get(ui_state, "Approval required to continue."),
+                                    state=legacy_state,
+                                    approval_timeout_seconds=config.WAIT_FOR_HUMAN_TIMEOUT,
+                                ).model_dump()
+                            )
+                        orchestration_started = True
                         continue
-                    task_repo.create_task(task_id, "SCHEDULED", prompt)
-                    state = WorkflowState(prompt=prompt)
+
+                # Fresh task initialization path
+                raw_prompt = incoming.prompt or ""
+                prompt = raw_prompt.strip()
+                if not prompt:
+                    continue
                 
-                orchestration_task = asyncio.create_task(
-                    run_orchestration(websocket, correlation_id, task_id, state)
-                )
-                set_task_reference(task_id, orchestration_task)
+                # Register in database as CREATED
+                session = await workflow_runtime.get_or_create_session(task_id, prompt)
+                # Rebind map
+                await connection_manager.register(task_id, websocket, correlation_id)
+                # Spawn background runtime execution loop
+                approval_event = await workflow_runtime.start_orchestration(task_id, prompt, correlation_id)
+                active_tasks[task_id] = {
+                    "websocket": websocket,
+                    "task": None,
+                    "approval_event": approval_event,
+                    "task_state": TaskState.SCHEDULED,
+                    "cancelled": False,
+                    "terminal_emitted": False,
+                    "workflow_state": None,
+                    "correlation_id": correlation_id,
+                    "terminal_lock": asyncio.Lock(),
+                    "last_activity_time": asyncio.get_event_loop().time(),
+                }
                 orchestration_started = True
                 
             elif event_type == WebSocketEventType.APPROVAL_RESPONSE:
-                action_str = payload.get("action")
-                try:
-                    action = ApprovalAction(action_str)
-                    task_repo.update_task_approval(task_id, action.value, payload.get("feedback"))
-                    handle_approval_response(
-                        task_id,
-                        action,
-                        payload.get("feedback"),
-                        selected_vendors=payload.get("selected_vendors")
+                if incoming.action:
+                    await workflow_runtime.handle_approval_response(
+                        task_id=task_id,
+                        action=incoming.action,
+                        feedback=incoming.feedback,
+                        selected_vendors=incoming.selected_vendors,
+                        incoming_version=incoming_version
                     )
-                except ValueError:
-                    logger.warning("Invalid approval action: %s", action_str)
+                else:
+                    logger.warning("APPROVAL_RESPONSE missing approval action.")
                     
             elif event_type == WebSocketEventType.STOP:
-                await cancel_task(task_id)
-                
+                logger.info("STOP signal received from client.")
+                # Verify version to prevent stale STOP signals
+                session = workflow_repo.get_session(task_id)
+                if session and (incoming_version is None or incoming_version == session.workflow_version):
+                    await workflow_runtime.cleanup_session(task_id)
+                else:
+                    logger.warning("Stale STOP signal version check failed.")
+
             elif event_type == WebSocketEventType.PONG:
-                logger.debug("Received PONG from client")
-                continue
-                
+                logger.debug("Received PONG heartbeat response.")
+
             elif event_type == WebSocketEventType.PING:
-                # Client-initiated ping, respond with pong
                 try:
                     await websocket.send_json({
                         "event_type": WebSocketEventType.PONG,
                         "correlation_id": correlation_id,
                         "task_id": task_id,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                        "timestamp": utc_now_iso()
                     })
                 except Exception:
                     pass
             else:
-                logger.warning("Unknown websocket event: %s", event_type)
-                
+                logger.warning("Unknown WebSocket event: %s", event_type)
+
     except WebSocketDisconnect:
-        logger.info("WebSocket disconnected")
-    except Exception:
-        logger.exception("WebSocket unexpected failure")
+        logger.info("WebSocket connection closed by client.")
+    except Exception as e:
+        logger.exception("Unexpected error inside WebSocket loop: %s", e)
     finally:
-        # Cancel heartbeat checker task
         heartbeat_task.cancel()
-        # Cancel orchestration task and cleanup
-        await cancel_task(task_id)
-        # Clear contextvars
+        # Unregister socket but DO NOT cancel task immediately to allow reconnection within grace period
+        await connection_manager.unregister(task_id)
+        active_tasks.pop(task_id, None)
+
         correlation_id_ctx.reset(corr_token)
         task_id_ctx.reset(task_token)

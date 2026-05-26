@@ -3,6 +3,9 @@ import { ConnectionStatus, TaskState, AgentStep, Message, ApprovalAction, Vendor
 import { getCleanHost, HTTP_BASE_URL } from '../constants/config';
 import { CLIENT_EVENTS } from '../constants/websocket-events';
 
+const getVendorName = (vendor: VendorResult) =>
+  vendor.vendor_name || vendor.name || 'Unnamed vendor';
+
 interface AgentState {
   // State variables
   hostUrl: string;
@@ -29,11 +32,14 @@ interface AgentState {
   taskHistory: TaskHistoryItem[];
   vendorResults: VendorResult[];
   selectedVendor: VendorResult | null;
+  selectedVendors: VendorResult[];
   pricingAnalysis: PricingAnalysis | null;
   reflectionMetadata: ReflectionMetadata | null;
   confidenceScore: number | null;
   lastActivityTime: number;
   finalEmail: string | null;
+  workflowVersion: number;
+  reasoningTraces: any[];
 
   // Actions
   setHostUrl: (url: string) => void;
@@ -48,6 +54,8 @@ interface AgentState {
   setRejectionFeedback: (feedback: string) => void;
   setIsRegenerating: (isRegen: boolean) => void;
   setTimeoutCountdown: (countdown: number | null | ((prev: number | null) => number | null)) => void;
+  setWorkflowVersion: (version: number) => void;
+  setReasoningTraces: (traces: any[]) => void;
   setError: (error: string | null) => void;
   setIds: (taskId: string | null, correlationId: string | null) => void;
   setCancellationReason: (reason: string | null) => void;
@@ -58,6 +66,7 @@ interface AgentState {
   // New actions
   setVendorResults: (vendors: VendorResult[]) => void;
   setSelectedVendor: (vendor: VendorResult | null) => void;
+  setSelectedVendors: (vendors: VendorResult[]) => void;
   setPricingAnalysis: (analysis: PricingAnalysis | null) => void;
   setReflectionMetadata: (metadata: ReflectionMetadata | null) => void;
   setConfidenceScore: (score: number | null) => void;
@@ -99,11 +108,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   taskHistory: [],
   vendorResults: [],
   selectedVendor: null,
+  selectedVendors: [],
   pricingAnalysis: null,
   reflectionMetadata: null,
   confidenceScore: null,
   lastActivityTime: Date.now(),
   finalEmail: null,
+  workflowVersion: 1,
+  reasoningTraces: [],
 
   setCurrentPendingStep: (currentPendingStep) => set({ currentPendingStep }),
   setCurrentStepData: (currentStepData) => set({ currentStepData }),
@@ -175,6 +187,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   // New state setters
   setVendorResults: (vendorResults) => set({ vendorResults }),
   setSelectedVendor: (selectedVendor) => set({ selectedVendor }),
+  setSelectedVendors: (selectedVendors) => set({ selectedVendors }),
   setPricingAnalysis: (pricingAnalysis) => set({ pricingAnalysis }),
   setReflectionMetadata: (reflectionMetadata) => {
     set({ reflectionMetadata });
@@ -185,6 +198,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setConfidenceScore: (confidenceScore) => set({ confidenceScore }),
   updateLastActivity: () => set({ lastActivityTime: Date.now() }),
   setFinalEmail: (finalEmail) => set({ finalEmail }),
+  setWorkflowVersion: (workflowVersion) => set({ workflowVersion }),
+  setReasoningTraces: (reasoningTraces) => set({ reasoningTraces }),
 
   addToHistory: (item) =>
     set((state) => {
@@ -281,11 +296,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       : 'step';
 
     if (action === 'APPROVE') {
+      const selectedVendorNames = selectedVendors?.map(getVendorName).filter(Boolean) ?? [];
       // Show feedback-based approval message (backend will extract vendor semantically)
       if (feedbackMessage) {
         get().appendMessage({
           sender: 'user',
-          text: `✅ Approved with feedback: "${feedbackMessage}"`,
+          text: selectedVendorNames.length > 0
+            ? `✅ Approved ${selectedVendorNames.join(', ')} with feedback: "${feedbackMessage}". Proceeding.`
+            : `✅ Approved with feedback: "${feedbackMessage}"`,
+        });
+      } else if (selectedVendorNames.length > 0) {
+        get().appendMessage({
+          sender: 'user',
+          text: `✅ Approved ${selectedVendorNames.join(', ')}. Proceeding.`,
         });
       } else {
         get().appendMessage({
@@ -315,6 +338,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
 
     if (socket && socket.readyState === WebSocket.OPEN) {
+      const { workflowVersion } = get();
       socket.send(
         JSON.stringify({
           event_type: CLIENT_EVENTS.APPROVAL_RESPONSE,
@@ -323,13 +347,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           task_id: taskId,
           correlation_id: correlationId,
           selected_vendors: selectedVendors || undefined,
+          workflow_version: workflowVersion,
         })
       );
     }
   },
 
   sendStop: () => {
-    const { socket, taskId, correlationId } = get();
+    const { socket, taskId, correlationId, workflowVersion } = get();
     
     // Immediate optimistic cleanup
     set({
@@ -350,6 +375,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           event_type: CLIENT_EVENTS.STOP,
           task_id: taskId,
           correlation_id: correlationId,
+          workflow_version: workflowVersion,
         })
       );
       socket.close();
@@ -383,10 +409,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       // Reset new states
       vendorResults: [],
       selectedVendor: null,
+      selectedVendors: [],
       pricingAnalysis: null,
       reflectionMetadata: null,
       confidenceScore: null,
       finalEmail: null,
+      workflowVersion: 1,
+      reasoningTraces: [],
     }));
   },
 }));

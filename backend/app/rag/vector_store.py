@@ -193,3 +193,30 @@ async def get_vector_store() -> BaseVectorStore:
     if _vector_store is None:
         await init_vector_store()
     return _vector_store
+
+
+async def reset_vector_store() -> BaseVectorStore:
+    """
+    Rebuilds the persisted vendor collection with embeddings from the active provider.
+    Useful after switching embedding models, which changes vector dimensions.
+    """
+    global _vector_store
+
+    try:
+        import chromadb
+        logger.info("Resetting ChromaDB vendor collection at %s", config.CHROMA_PERSIST_PATH)
+        store = ChromaVectorStore(config.CHROMA_PERSIST_PATH)
+        try:
+            store.client.delete_collection("procurement_vendors")
+        except Exception:
+            pass
+        store.collection = store.client.get_or_create_collection("procurement_vendors")
+        await store.add_vendors(SAMPLE_VENDORS)
+        _vector_store = store
+    except Exception as e:
+        logger.error("Failed to reset ChromaDB (%s). Falling back to PurePythonVectorStore.", e)
+        store = PurePythonVectorStore()
+        await store.add_vendors(SAMPLE_VENDORS)
+        _vector_store = store
+
+    return _vector_store

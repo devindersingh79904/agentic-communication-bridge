@@ -1,9 +1,9 @@
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime
 from app.models.workflow_state import WorkflowState
 from app.core.enums import TaskState
 from app.services.llm_service import _llm_call
+from app.utils.time import utc_now_iso
 from app.tools.vendor_search_tool import vendor_search_tool
 from app.tools.external_vendor_search_tool import external_vendor_search_tool
 from app.tools.pricing_analysis_tool import pricing_analysis_tool
@@ -13,6 +13,33 @@ from app.tools.reflection_tool import reflection_tool
 logger = logging.getLogger("app.services.agent_planner")
 
 class AgentPlanner:
+    def _fallback_vendors_for_category(self, category: str, top_k: int = 3) -> list[Dict[str, Any]]:
+        """
+        Returns deterministic local vendors when vector/web search produces no candidates.
+        This keeps the human approval gate actionable even if embeddings or Chroma are empty.
+        """
+        try:
+            from app.rag.vector_store import SAMPLE_VENDORS
+        except Exception as exc:
+            logger.warning("Could not load sample vendor fallback data: %s", exc)
+            SAMPLE_VENDORS = []
+
+        normalized_category = (category or "computer").lower()
+        candidates = [
+            {**vendor, "confidence": vendor.get("confidence", 0.5)}
+            for vendor in SAMPLE_VENDORS
+            if vendor.get("category", "").lower() == normalized_category
+        ]
+
+        if not candidates and normalized_category != "computer":
+            candidates = [
+                {**vendor, "confidence": vendor.get("confidence", 0.5)}
+                for vendor in SAMPLE_VENDORS
+                if vendor.get("category", "").lower() == "computer"
+            ]
+
+        return candidates[:top_k]
+
     async def extract_selected_vendor_semantic(self, feedback: str, available_vendors: list) -> Optional[Dict[str, Any]]:
         """
         Uses LLM to semantically understand which vendor the user wants from their feedback.
@@ -276,7 +303,7 @@ class AgentPlanner:
                 state.feedback_history.append({
                     "action": "REJECT_VENDORS",
                     "feedback": state.rejection_feedback,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": utc_now_iso()
                 })
                 logger.info(f"🔄 TRIGGERING RE-SEARCH with feedback: {state.rejection_feedback}")
                 return {
@@ -463,6 +490,12 @@ class AgentPlanner:
             await transition_callback(TaskState.RUNNING)
             
         all_vendors = internal_vendors + external_vendors
+        if not all_vendors:
+            logger.warning(
+                "Planner research returned no vendors for category '%s'. Applying local sample fallback.",
+                category,
+            )
+            all_vendors = self._fallback_vendors_for_category(category, top_k=3)
         
         # Aggregate results back to workflow state
         state.research_data = {
@@ -479,7 +512,7 @@ class AgentPlanner:
         Orchestrates vendor pricing/delivery comparison using the pricing analysis tool.
         """
         logger.info("Planner starting pricing analysis step")
-        vendors = state.research_data.get("vendors", []) if state.research_data else []
+        vendors = state.selected_vendors or (state.research_data.get("vendors", []) if state.research_data else [])
         if not vendors:
             # Fallback to empty if none found
             state.analysis_summary = "No candidate vendors to analyze."
@@ -489,9 +522,11 @@ class AgentPlanner:
         analysis_result = await pricing_analysis_tool(query=state.prompt, vendors=vendors)
         state.analysis_summary = analysis_result.get("analysis_summary", "")
 
-        # IMPORTANT: Only update selected_vendor if user hasn't already selected one
-        # User's vendor selection should NOT be overwritten by pricing analysis
-        if not state.selected_vendor:
+        if len(state.selected_vendors) > 1:
+            state.selected_vendor = analysis_result.get("recommended_vendor", state.selected_vendors[0])
+            vendor_name = (state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name')) if state.selected_vendor else 'None'
+            logger.info(f"Pricing analysis recommended vendor from user-selected candidates: {vendor_name}")
+        elif not state.selected_vendor:
             state.selected_vendor = analysis_result.get("recommended_vendor", None)
             vendor_name = (state.selected_vendor.get('vendor_name') or state.selected_vendor.get('name')) if state.selected_vendor else 'None'
             logger.info(f"Pricing analysis recommended vendor: {vendor_name}")
