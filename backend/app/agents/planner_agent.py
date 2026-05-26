@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 
 from app.core import config
 from app.core.logger import get_logger
@@ -12,44 +12,23 @@ from app.storage.workflow_repository import workflow_repo
 logger = get_logger("agents.planner")
 
 class PlannerAgent:
-    def detect_category_rules(self, prompt: str) -> Optional[str]:
-        """
-        Quick rule-based keyword matching for procurement categories.
-        """
-        prompt_lower = prompt.lower()
-        keywords = {
-            "computer": ["computer", "laptop", "pc", "desktop", "server", "hardware", "macbook", "monitor", "screen", "keyboard", "gaming rig", "workstation"],
-            "transport": ["transport", "logistics", "delivery", "truck", "van", "courier", "shipping", "bike", "cargo", "movers", "ev hire", "transit"],
-            "food": ["food", "catering", "lunch", "meal", "buffet", "snack", "organic", "sweet", "catering", "bites", "beverage", "pastry"],
-            "stationery": ["stationery", "paper", "notebook", "pen", "marker", "chair", "stapler", "office supplies", "whiteboard", "easel", "supplies"]
-        }
-        for cat, kw_list in keywords.items():
-            for kw in kw_list:
-                if kw in prompt_lower:
-                    return cat
-        return None
-
     async def detect_category(self, prompt: str) -> str:
         """
-        Classifies the request prompt into a procurement category.
+        Classifies the request prompt into a procurement category using the LLM.
         """
-        category = self.detect_category_rules(prompt)
-        if category:
-            logger.info(f"Planner category detected via rule-based matching: '{category}'")
-            return category
-            
-        logger.info("Category detection: no keywords matched. Falling back to LLM classification.")
         system_prompt = (
             "You are a procurement classification agent. Analyze the user's request and classify "
-            "it into exactly one of the following categories: computer, transport, food, stationery. "
             "Return ONLY the category name in lowercase. No other text, no formatting."
         )
         try:
+            logger.info("Planner category LLM call prompt=%r", prompt)
             category_res = await _llm_call("category_detection", system_prompt, prompt, max_tokens=10)
+            logger.info("Planner category LLM raw result=%r", category_res)
             category_res = category_res.strip().lower()
             if category_res in ["computer", "transport", "food", "stationery"]:
-                logger.info(f"Classified prompt category via LLM: '{category_res}'")
+                logger.info("Planner category selected by LLM: '%s'", category_res)
                 return category_res
+            logger.warning("Planner category LLM returned unsupported category: %r", category_res)
         except Exception as e:
             logger.warning(f"Failed to detect category for prompt via LLM: {e}")
         return "computer"

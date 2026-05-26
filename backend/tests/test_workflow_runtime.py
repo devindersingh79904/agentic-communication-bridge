@@ -59,6 +59,25 @@ def test_final_draft_rejection_regenerates_only_outreach_steps():
         "self_reflection": "pending",
         "execute_outreach": "pending",
     }
+    assert updated_state.rejection_feedback == "shorter the email"
+    assert updated_state.constraints["latest_user_feedback"] == "shorter the email"
+    assert updated_state.regeneration_count == 0
+
+
+def test_evaluator_feedback_does_not_overwrite_user_draft_feedback():
+    state = WorkflowState(prompt="i want new socks new brown shoes")
+    state.rejection_feedback = "make it one liner and make response in punjabi"
+    state.constraints["latest_user_feedback"] = state.rejection_feedback
+    state.regeneration_count = 1
+
+    evaluator_feedback = "Quality audit failed. Corrections: add a greeting"
+    existing_feedback = state.rejection_feedback
+    state.constraints["evaluator_feedback"] = evaluator_feedback
+    if not existing_feedback:
+        state.rejection_feedback = evaluator_feedback
+
+    assert state.rejection_feedback == "make it one liner and make response in punjabi"
+    assert state.constraints["evaluator_feedback"] == evaluator_feedback
 
 
 async def test_multiple_selected_vendors_are_compared_before_drafting(monkeypatch):

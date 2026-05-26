@@ -23,6 +23,9 @@ class EvaluatorAgent:
             "1. Tone: Must be extremely professional and respectful.\n"
             "2. Constraints: Must mention the requested product/services and must target the selected vendor (no other vendors).\n"
             "3. Formatting: Must have a proper greeting, clear body paragraphs, and a professional signature block.\n\n"
+            "Important: explicit user feedback in the active constraints overrides generic formatting expectations. "
+            "For example, if the user requested a one-liner or a specific language, do not fail the draft for being short "
+            "or for not using a standard multi-paragraph email structure as long as it follows that feedback.\n\n"
             "Produce a JSON response with the following keys:\n"
             "{\n"
             '  "score": 0.85,  // float from 0.0 to 1.0\n'

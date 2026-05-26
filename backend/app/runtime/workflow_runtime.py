@@ -216,11 +216,15 @@ class WorkflowRuntime:
             return False
 
         legacy_state.rejection_feedback = feedback
+        legacy_state.feedback_history.append(feedback)
+        legacy_state.constraints["latest_user_feedback"] = feedback
+        legacy_state.constraints["draft_feedback"] = feedback
         legacy_state.final_approval_approved = False
         legacy_state.draft = None
         legacy_state.improved_draft = None
         legacy_state.reflection_metadata = None
         legacy_state.execution_result = None
+        legacy_state.regeneration_count = 0
         legacy_state.current_step = TaskState.DRAFTING_OUTREACH
 
         if not session.execution_plan.plan:
@@ -427,6 +431,7 @@ class WorkflowRuntime:
                     
                     if not eval_out.passed:
                         legacy_state.regeneration_count += 1
+                        existing_feedback = legacy_state.rejection_feedback
                         if legacy_state.regeneration_count > 1:
                             legacy_state.improved_draft = legacy_state.improved_draft or legacy_state.draft
                             legacy_state.reflection_metadata = {
@@ -447,8 +452,11 @@ class WorkflowRuntime:
 
                         # Auto-correction loop: force rewrite
                         await progress_emitter("self_reflection", f"Evaluator audit flagged issues (Score {eval_out.score:.2f}). Re-generating draft...")
-                        # Append critique
-                        legacy_state.rejection_feedback = f"Quality audit failed. Corrections: {', '.join(eval_out.corrections)}"
+                        # Keep explicit user feedback as the primary drafting instruction.
+                        evaluator_feedback = f"Quality audit failed. Corrections: {', '.join(eval_out.corrections)}"
+                        legacy_state.constraints["evaluator_feedback"] = evaluator_feedback
+                        if not existing_feedback:
+                            legacy_state.rejection_feedback = evaluator_feedback
                         session.workflow_state_json = legacy_state.to_json()
                         workflow_repo.save_session(session)
                         

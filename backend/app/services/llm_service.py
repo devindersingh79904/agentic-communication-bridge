@@ -330,11 +330,12 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
     """
     Generates a professional and concise vendor outreach message using the user's
     task prompt, analysis summary, and optional user feedback for context.
-    User feedback guides tone and content (e.g., "make it more formal", "include pricing").
+    User feedback guides tone and content.
     Memory context enforces critical constraints (e.g., vendor selection must not be overridden).
     Returns the outreach email draft.
     """
     logger.info("Draft generation started (provider=%s, model=%s)", config.AGENT_PROVIDER, _get_model())
+
 
     location_context = (
         f"Procurement region:\n"
@@ -354,7 +355,10 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
 
     feedback_context = ""
     if user_feedback and user_feedback.strip():
-        feedback_context = f"User preferences/feedback:\n{user_feedback}\n\n"
+        feedback_context = (
+            "Mandatory user feedback/instructions. These override generic email style rules when they conflict:\n"
+            f"{user_feedback}\n\n"
+        )
 
     user_content = (
         f"{location_context}\n\n"
@@ -373,7 +377,10 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
         "You are a professional procurement assistant. Write a concise, professional vendor outreach email. "
         "Address the email directly to the vendor company by name (e.g., 'Dear TechNova Systems Team,'). "
         "NEVER use placeholder text such as [Recipient's Last Name], [First Name], [Contact Name], "
-        "[Vendor Name], or any bracket placeholders.\n\n"
+        "[Vendor Name], or any bracket placeholders.\n"
+        "You MUST obey user feedback exactly. If the user asks for a one-liner, produce one sentence only. "
+        "If the user asks for a language, write the draft in that language. "
+        "Do not expand the draft beyond the user's requested length or format.\n\n"
         "Return a JSON object of this structure:\n"
         "{\n"
         '  "draft": "email text...",\n'
@@ -387,6 +394,9 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
         system_prompt = f"{system_prompt}\n\n{memory_context}"
 
     _log_llm_used("generate_outreach_draft")
+
+    logger.info("LLM System Prompt:\n%s", system_prompt)
+    logger.info("LLM User Content:\n%s", user_content)
     try:
         response = await get_client().chat.completions.create(
             model=_get_model(),
@@ -401,7 +411,7 @@ async def generate_outreach_draft(prompt: str, analysis_summary: str, selected_v
                 }
             ],
             temperature=config.OPENAI_TEMPERATURE,
-            max_tokens=500
+            max_tokens=1000
         )
     except Exception as e:
         logger.exception("LLM request failed during draft generation (provider=%s)", config.AGENT_PROVIDER)
@@ -499,12 +509,12 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
     )
     if rejection_feedback:
         rewrite_content += (
-            f"User rejected the previous draft with feedback:\n"
+            f"Mandatory user feedback. These instructions override internal evaluation notes if there is any conflict:\n"
             f"'{rejection_feedback}'\n\n"
         )
     rewrite_content += (
         "Rewrite the draft into a polished, professional procurement outreach email "
-        "that addresses all evaluation points.\n\n"
+        "that addresses all evaluation points while strictly following the mandatory user feedback.\n\n"
         "Return ONLY the rewritten email. No commentary, no headings, no analysis."
     )
     _log_llm_used("self_reflect_pass2_rewrite")
@@ -519,6 +529,8 @@ async def self_reflect_draft(draft: str, prompt: str, rejection_feedback: Option
                         "Return ONLY the final rewritten outreach email. "
                         "Do NOT include any evaluation, commentary, markdown headings, "
                         "bullet points, or analysis text. "
+                        "Strictly follow the user's rejection feedback for language, length, and format. "
+                        "If the feedback asks for one line, return one line only. "
                         "NEVER replace specific vendor or company names with placeholders like "
                         "[Recipient's Last Name], [First Name], [Vendor Name], or any bracket text. "
                         "If the original draft addresses a specific company, preserve that company name. "

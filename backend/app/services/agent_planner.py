@@ -115,38 +115,10 @@ class AgentPlanner:
             logger.warning(f"Failed to extract vendor semantically: {e}")
             return None
 
-    def detect_category_rules(self, prompt: str) -> Optional[str]:
-        """
-        Quick rule-based keyword matching for procurement categories.
-        """
-        prompt_lower = prompt.lower()
-        
-        keywords = {
-            "computer": ["computer", "laptop", "pc", "desktop", "server", "computer hardware", "it hardware", "network hardware", "macbook", "monitor", "screen", "keyboard", "gaming rig", "workstation"],
-            "transport": ["transport", "logistics", "delivery", "truck", "van", "courier", "shipping", "bike", "cargo", "movers", "ev hire", "transit"],
-            "food": ["food", "catering", "lunch", "meal", "buffet", "snack", "organic", "sweet", "catering", "bites", "beverage", "pastry"],
-            "stationery": ["stationery", "paper", "notebook", "pen", "marker", "chair", "stapler", "office supplies", "whiteboard", "easel", "supplies"]
-        }
-        
-        for cat, kw_list in keywords.items():
-            for kw in kw_list:
-                if kw in prompt_lower:
-                    return cat
-        return None
-
     async def detect_category(self, prompt: str) -> str:
         """
-        Classifies the request prompt into a procurement category.
-        Uses rule-based classification first, then falls back to LLM.
+        Classifies the request prompt into a procurement category using the LLM.
         """
-        # 1. Rule-based check
-        category = self.detect_category_rules(prompt)
-        if category:
-            logger.info(f"Category detected via rule-based matching: '{category}'")
-            return category
-            
-        # 2. LLM Fallback
-        logger.info("Category detection: no keywords matched. Falling back to LLM.")
         system_prompt = (
             "You are a procurement classification agent. Analyze the user's request and classify "
             "it into exactly one of the following categories: computer, transport, food, stationery, other. "
@@ -154,11 +126,14 @@ class AgentPlanner:
             "Return ONLY the category name in lowercase. No other text, no formatting."
         )
         try:
+            logger.info("Category LLM call prompt=%r", prompt)
             category = await _llm_call("category_detection", system_prompt, prompt, max_tokens=10)
+            logger.info("Category LLM raw result=%r", category)
             category = category.strip().lower()
             if category in ["computer", "transport", "food", "stationery", "other"]:
-                logger.info(f"Classified prompt category via LLM as: '{category}'")
+                logger.info("Category selected by LLM: '%s'", category)
                 return category
+            logger.warning("Category LLM returned unsupported category: %r", category)
         except Exception as e:
             logger.warning(f"Failed to detect category for prompt via LLM: {e}")
         return "computer"
@@ -657,10 +632,16 @@ class AgentPlanner:
             state.draft = "No vendor selected to draft outreach for."
             return
 
-        # If user provided feedback at vendor selection, use it to guide the draft
+        # If user provided feedback at any approval gate, use it to guide the draft.
         user_feedback = state.rejection_feedback if state.rejection_feedback else None
+        evaluator_feedback = state.constraints.get("evaluator_feedback") if state.constraints else None
+        if user_feedback and evaluator_feedback:
+            user_feedback = (
+                f"{user_feedback}\n\n"
+                f"Additional quality corrections to satisfy without overriding user feedback: {evaluator_feedback}"
+            )
         if user_feedback:
-            logger.info(f"📝 Using Step 1 feedback to guide draft generation: {user_feedback}")
+            logger.info(f"📝 Using user feedback to guide draft generation: {user_feedback}")
 
         # Pass memory_context to enforce vendor constraint in draft generation
         rec_result = await recommendation_tool(
