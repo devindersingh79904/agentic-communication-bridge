@@ -13,3 +13,5 @@ __pycache__/
 *.pyc
 chroma_db/
 chroma/
+backend/docs/data-flow-deep-dive.md
+
