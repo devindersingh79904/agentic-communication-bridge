@@ -5,7 +5,7 @@ from app.services.agent_planner import planner
 
 logger = get_logger("tools.draft")
 
-async def draft_tool(state: WorkflowState) -> None:
+async def draft_tool(state: WorkflowState, progress_callback = None) -> None:
     """
     Upgraded Draft Tool.
     Delegates to the agent planner to generate outreach text targeting the selected vendor.
@@ -13,3 +13,4 @@ async def draft_tool(state: WorkflowState) -> None:
     logger.info("Draft tool execution started")
     await planner.run_draft(state)
     logger.info("Draft tool execution completed")
+

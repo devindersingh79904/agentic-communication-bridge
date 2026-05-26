@@ -399,7 +399,7 @@ class WorkflowRuntime:
             session.memory_context = "\n---\n".join(memory_parts)
 
         # Progress emitter callback
-        async def progress_emitter(tool_name: str, message: str) -> None:
+        async def progress_emitter(tool_name: str, message: str, task_state: Optional[TaskState] = None) -> None:
             # Map tool names to UI task states to ensure mobile display compat
             tool_state_map = {
                 "vendor_search": TaskState.SEARCHING_VENDORS,
@@ -408,7 +408,7 @@ class WorkflowRuntime:
                 "self_reflection": TaskState.SELF_REFLECTION,
                 "execute_outreach": TaskState.RUNNING
             }
-            task_state = tool_state_map.get(tool_name, TaskState.RUNNING)
+            resolved_state = task_state or tool_state_map.get(tool_name, TaskState.RUNNING)
             
             # Map step labels
             step_map = {
@@ -421,7 +421,7 @@ class WorkflowRuntime:
             agent_step = step_map.get(tool_name, AgentStep.EXECUTING)
             
             legacy_state = WorkflowState.from_json(session.workflow_state_json)
-            legacy_state.current_step = task_state
+            legacy_state.current_step = resolved_state
             
             # Save progress
             session.workflow_state_json = legacy_state.to_json()
@@ -431,12 +431,13 @@ class WorkflowRuntime:
                 correlation_id=correlation_id,
                 task_id=task_id,
                 workflow_version=session.workflow_version,
-                task_state=task_state,
+                task_state=resolved_state,
                 agent_step=agent_step,
                 message=message,
                 state=legacy_state,
             )
             await connection_manager.send_json(task_id, event.model_dump())
+
 
         try:
             # 1. PLANNING stage (Separate Planner)
@@ -482,6 +483,9 @@ class WorkflowRuntime:
                     session = workflow_repo.get_session(task_id) or session
                     
                     if not approved:
+                        if session.status == RuntimeWorkflowState.CANCELLED:
+                            logger.info(f"Orchestration loop exiting because task {task_id} is CANCELLED.")
+                            break
                         feedback = session.rejection_feedback or "User rejected previous step."
 
                         if self._prepare_final_draft_regeneration(session, feedback):
@@ -608,6 +612,7 @@ class WorkflowRuntime:
 
             # 3. SUCCESS / TERMINAL FINALIZATION
             if session.status == RuntimeWorkflowState.COMPLETED:
+                workflow_repo.save_session(session)
                 legacy_state = WorkflowState.from_json(session.workflow_state_json)
                 
                 # Write final SQLite output fields

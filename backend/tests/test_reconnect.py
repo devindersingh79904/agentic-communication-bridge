@@ -29,27 +29,27 @@ async def test_reconnection_and_restore_flow(test_client):
     m_ref = AsyncMock()
     m_exe = AsyncMock()
 
-    async def side_effect_research(state):
+    async def side_effect_research(state, *args, **kwargs):
         state.research_data = {
             "vendors": [{"name": "TestVendor", "location": "TestLocation"}],
             "market_insights": "Test insights"
         }
     m_res.side_effect = side_effect_research
 
-    async def side_effect_analysis(state):
+    async def side_effect_analysis(state, *args, **kwargs):
         state.analysis_summary = "Analysis complete"
         state.selected_vendor = {"name": "TestVendor", "location": "TestLocation"}
     m_ana.side_effect = side_effect_analysis
 
-    async def side_effect_draft(state):
+    async def side_effect_draft(state, *args, **kwargs):
         state.draft = "Draft Message"
     m_dra.side_effect = side_effect_draft
 
-    async def side_effect_reflect(state):
+    async def side_effect_reflect(state, *args, **kwargs):
         state.improved_draft = "Refined Draft"
     m_ref.side_effect = side_effect_reflect
 
-    async def side_effect_execute(state):
+    async def side_effect_execute(state, *args, **kwargs):
         state.execution_result = "Execution Succeeded"
     m_exe.side_effect = side_effect_execute
 

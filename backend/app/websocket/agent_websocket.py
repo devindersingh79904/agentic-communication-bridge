@@ -10,7 +10,6 @@ from app.models.workflow_models import RuntimeWorkflowState
 from app.models.workflow_state import WorkflowState
 from app.runtime.event_streamer import build_approval_required_event, build_pricing_payload, build_cancelled_event
 from app.schemas.websocket_schema import IncomingWebSocketEvent, ErrorEvent
-from app.services.agent_orchestrator_service import active_tasks
 from app.storage.workflow_repository import workflow_repo
 from app.utils.time import utc_now_iso
 from app.websocket.connection_manager import connection_manager
@@ -139,19 +138,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 approval_event = asyncio.Event()
                                 _active_events[client_task_id] = approval_event
 
-                        # Register or update in the active_tasks compatibility registry
-                        active_tasks[client_task_id] = {
-                            "websocket": websocket,
-                            "task": _active_tasks.get(client_task_id),
-                            "approval_event": approval_event,
-                            "task_state": ui_state,
-                            "cancelled": False,
-                            "terminal_emitted": False,
-                            "workflow_state": legacy_state,
-                            "correlation_id": correlation_id,
-                            "terminal_lock": asyncio.Lock(),
-                            "last_activity_time": asyncio.get_event_loop().time(),
-                        }
+
 
                         await websocket.send_json({
                             "event_type": WebSocketEventType.STATUS_UPDATE,
@@ -200,20 +187,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 session = await workflow_runtime.get_or_create_session(task_id, prompt)
                 # Rebind map
                 await connection_manager.register(task_id, websocket, correlation_id)
-                # Spawn background runtime execution loop
                 approval_event = await workflow_runtime.start_orchestration(task_id, prompt, correlation_id)
-                active_tasks[task_id] = {
-                    "websocket": websocket,
-                    "task": None,
-                    "approval_event": approval_event,
-                    "task_state": TaskState.SCHEDULED,
-                    "cancelled": False,
-                    "terminal_emitted": False,
-                    "workflow_state": None,
-                    "correlation_id": correlation_id,
-                    "terminal_lock": asyncio.Lock(),
-                    "last_activity_time": asyncio.get_event_loop().time(),
-                }
                 orchestration_started = True
                 
             elif event_type == WebSocketEventType.APPROVAL_RESPONSE:
@@ -388,7 +362,6 @@ async def websocket_endpoint(websocket: WebSocket):
         heartbeat_task.cancel()
         # Unregister socket but DO NOT cancel task immediately to allow reconnection within grace period
         await connection_manager.unregister(task_id)
-        active_tasks.pop(task_id, None)
 
         correlation_id_ctx.reset(corr_token)
         task_id_ctx.reset(task_token)

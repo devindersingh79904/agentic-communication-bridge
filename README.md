@@ -77,9 +77,7 @@ The mobile interface is designed as an interactive, conversational copilot:
 
 ---
 
-## Backend Runtime Summary
-
-The backend uses a durable runtime rather than the older direct orchestrator path:
+The backend uses a clean, durable runtime that drives all agent steps and state persistence:
 
 ```text
 websocket/agent_websocket.py
@@ -90,9 +88,7 @@ websocket/agent_websocket.py
   -> storage/workflow_repository.py
 ```
 
-Runtime status is stored as `RuntimeWorkflowState`. UI-facing progress is streamed as `TaskState`. Tool context is serialized through `WorkflowState`.
-
-The module `backend/app/services/agent_orchestrator_service.py` is intentionally a small compatibility facade for older imports and tests. Transitional logic is isolated in `backend/app/services/legacy_orchestrator_compat.py`; new execution work should target `backend/app/runtime/workflow_runtime.py`.
+Runtime status is stored as `RuntimeWorkflowState`. UI-facing progress is streamed as `TaskState`. Tool context is serialized through `WorkflowState`. All execution work goes directly through the active `WorkflowRuntime` pipeline. All legacy facades and compat layer files have been removed.
 
 ---
 
@@ -256,7 +252,7 @@ uv run pytest
 Current backend verification:
 
 ```text
-27 passed
+24 passed
 ```
 
 ---

@@ -4,8 +4,8 @@ from starlette.websockets import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from app.core import config
-from app.services.agent_orchestrator_service import active_tasks
 from app.core.enums import TaskState, ApprovalAction
+
 from app.storage.workflow_repository import workflow_repo
 from app.models.workflow_models import RuntimeWorkflowState, WorkflowSession
 from app.models.workflow_state import WorkflowState
@@ -26,7 +26,7 @@ def speed_up_and_mock_tools():
     m_exe = AsyncMock()
 
     # Populate state on tools so step_data is non-empty
-    async def side_effect_research(state):
+    async def side_effect_research(state, *args, **kwargs):
         state.research_data = {
             "vendors": [{"name": "TestVendor", "location": "TestLocation"}],
             "market_insights": "Test insights",
@@ -34,20 +34,20 @@ def speed_up_and_mock_tools():
         }
     m_res.side_effect = side_effect_research
 
-    async def side_effect_analysis(state):
+    async def side_effect_analysis(state, *args, **kwargs):
         state.analysis_summary = "Analysis complete"
         state.selected_vendor = {"name": "TestVendor", "location": "TestLocation"}
     m_ana.side_effect = side_effect_analysis
 
-    async def side_effect_draft(state):
+    async def side_effect_draft(state, *args, **kwargs):
         state.draft = "Draft Message"
     m_dra.side_effect = side_effect_draft
 
-    async def side_effect_reflect(state):
+    async def side_effect_reflect(state, *args, **kwargs):
         state.improved_draft = "Refined Draft"
     m_ref.side_effect = side_effect_reflect
 
-    async def side_effect_execute(state):
+    async def side_effect_execute(state, *args, **kwargs):
         state.execution_result = "Execution Succeeded"
     m_exe.side_effect = side_effect_execute
 

@@ -8,7 +8,6 @@ from app.core.logger import get_logger
 from app.models.workflow_models import WorkflowSession, PlanStep, ToolResult, RuntimeWorkflowState
 from app.models.workflow_state import WorkflowState
 from app.core.tool_registry import tool_registry
-from app.tools.base_tool import BaseTool
 from app.storage.workflow_repository import workflow_repo
 
 logger = get_logger("runtime.execution_engine")
@@ -99,7 +98,7 @@ class ExecutionEngine:
     async def _execute_step(self, session: WorkflowSession, step: PlanStep, progress_emitter: Callable[[str, str], Any]) -> bool:
         """
         Executes a single step using its tool name. Handles retries with exponential backoff.
-        Supports both class-based BaseTool implementations and legacy callable tool functions (and test mocks).
+        Supports async callable tool functions (and test mocks).
         """
         task_id = session.task_id
         tool_name = step.tool
@@ -136,22 +135,18 @@ class ExecutionEngine:
                 attempts += 1
                 logger.info(f"Running tool {tool_name} for task {task_id} (Attempt {attempts}/{max_attempts})")
                 
-                # Check if it is a BaseTool instance or a raw callable function (legacy mock)
-                if isinstance(tool, BaseTool):
-                    async def tool_progress_logger(msg: str):
-                        await progress_emitter(tool_name, msg)
-                    result: ToolResult = await tool.execute(session, tool_progress_logger)
+                async def tool_progress_logger(msg: str, task_state = None):
+                    await progress_emitter(tool_name, msg, task_state)
+
+                legacy_state = WorkflowState.from_json(session.workflow_state_json)
+                if asyncio.iscoroutinefunction(tool):
+                    await tool(legacy_state, tool_progress_logger)
                 else:
-                    # Legacy or Mocked tool function call compatibility
-                    legacy_state = WorkflowState.from_json(session.workflow_state_json)
-                    if asyncio.iscoroutinefunction(tool):
-                        await tool(legacy_state)
-                    else:
-                        tool(legacy_state)
-                    # Update session state back
-                    session.workflow_state_json = legacy_state.to_json()
-                    workflow_repo.save_session(session)
-                    result = ToolResult(status="success", confidence=0.85)
+                    tool(legacy_state, tool_progress_logger)
+                # Update session state back
+                session.workflow_state_json = legacy_state.to_json()
+                workflow_repo.save_session(session)
+                result = ToolResult(status="success", confidence=0.85)
 
                 if result.status == "success":
                     step.status = "completed"
