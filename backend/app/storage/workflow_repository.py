@@ -205,15 +205,6 @@ class WorkflowRepository:
             )
             return session
 
-    def append_event_history(self, task_id: str, event: Dict[str, Any]) -> None:
-        """
-        Appends an event object into the session's event logs, recording state transitions.
-        """
-        session = self.get_session(task_id)
-        if session:
-            session.event_history.append(event)
-            self.save_session(session)
-
     def log_state_transition(self, task_id: str, old_state: str, new_state: str) -> None:
         """
         Adds audit logs in the task_transitions table for database compatibility.

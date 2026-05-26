@@ -53,14 +53,6 @@ class EvaluatorOutput(BaseModel):
     passed: bool = Field(..., description="True if draft passes quality audit")
     corrections: List[str] = Field(default_factory=list, description="Specific feedback items to correct")
 
-class ReasoningTrace(BaseModel):
-    """
-    Agentic reasoning traces showing high-level decisions.
-    """
-    decision: str = Field(..., description="Action taken or decided")
-    reason: str = Field(..., description="Reasoning for the decision")
-    timestamp: str = Field(..., description="ISO 8601 UTC timestamp")
-
 class WorkflowSession(BaseModel):
     """
     Central database-persisted session tracking the durable state machine execution.
@@ -80,7 +72,3 @@ class WorkflowSession(BaseModel):
     retries_count: int = Field(0, description="Total tool execution retry attempts")
     memory_context: Optional[str] = Field(None, description="Prior successful workflow preferences context")
     metrics: Dict[str, Any] = Field(default_factory=dict, description="Workflow execution performance metrics")
-
-
-# Backward compatibility for older imports/tests while new code uses RuntimeWorkflowState.
-CoreWorkflowState = RuntimeWorkflowState

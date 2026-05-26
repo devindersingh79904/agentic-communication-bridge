@@ -59,43 +59,9 @@ async def test_reconnection_and_restore_flow(test_client):
     tool_registry.register("self_reflection", m_ref)
     tool_registry.register("execute_outreach", m_exe)
 
-    m_decide = AsyncMock()
-    async def side_effect_decide(state):
-        # 1. Vendor search phase
-        if not state.research_data:
-            return {"next_action": "vendor_search", "reason": "search", "parameters": {}}
-            
-        # 2. Wait for vendor selection
-        if state.research_data and not state.selected_vendors:
-            return {"next_action": "wait_for_human", "reason": "wait vendor", "parameters": {"step": "vendor_selection"}}
-            
-        # 3. Pricing analysis phase
-        if state.selected_vendors and not state.analysis_summary:
-            return {"next_action": "pricing_analysis", "reason": "pricing", "parameters": {}}
-            
-        # 4. Wait for price approval (auto-proceed in loop)
-        if state.analysis_summary and not state.draft:
-            return {"next_action": "draft_outreach", "reason": "draft", "parameters": {}}
-            
-        # 5. Reflection
-        if state.draft and not state.improved_draft:
-            return {"next_action": "self_reflection", "reason": "reflection", "parameters": {}}
-            
-        # 6. Wait for final approval
-        if state.improved_draft and not state.execution_result:
-            if not state.final_approval_approved:
-                return {"next_action": "wait_for_human", "reason": "wait final", "parameters": {"step": "final_approval"}}
-            else:
-                return {"next_action": "execute_outreach", "reason": "execute", "parameters": {}}
-            
-        return {"next_action": "complete", "reason": "complete", "parameters": {}}
-        
-    m_decide.side_effect = side_effect_decide
-
     with patch.object(config, "AGENT_STEP_DELAY_SECONDS", 0), \
          patch.object(config, "WAIT_FOR_HUMAN_TIMEOUT", 30), \
-         patch.object(config, "APPROVAL_TIMEOUT_SECONDS", 30), \
-         patch("app.services.agent_planner.planner.decide_next_action", new=m_decide):
+         patch.object(config, "APPROVAL_TIMEOUT_SECONDS", 30):
          
         # Connect client 1
         with test_client.websocket_connect("/v1/agent/connect") as ws:
